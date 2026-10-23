@@ -32,9 +32,11 @@ class _HomePageState extends State<HomePage> {
 
   bool _loading = false;
   bool _saving = false;
+  bool _phoneOnly = true;
   String? _error;
   String? _savedPath;
   int _savedCount = 0;
+  int _removedFromPc = 0;
 
   @override
   void dispose() {
@@ -98,7 +100,7 @@ class _HomePageState extends State<HomePage> {
     });
     try {
       final job = await GrabberApi(widget.serverUrl)
-          .createJob(link.url, _selected.toList());
+          .createJob(link.url, _selected.toList(), phoneOnly: _phoneOnly);
       if (!mounted) return;
       setState(() {
         _job = job;
@@ -150,6 +152,7 @@ class _HomePageState extends State<HomePage> {
     setState(() {
       _saving = true;
       _savedCount = 0;
+      _removedFromPc = 0;
       _error = null;
       _savedPath = null;
     });
@@ -176,13 +179,25 @@ class _HomePageState extends State<HomePage> {
         setState(() => _savedCount = copied);
       }
 
+      var removed = 0;
+      if (job.phoneOnly) {
+        removed = await api.release(job.id);
+      }
+
       if (!mounted) return;
       setState(() {
         _saving = false;
         _savedPath = folder.path;
+        _removedFromPc = removed;
       });
       ScaffoldMessenger.of(context).showSnackBar(
-        SnackBar(content: Text('Copied $copied file(s) to the phone')),
+        SnackBar(
+          content: Text(
+            job.phoneOnly
+                ? 'Copied $copied file(s) to the phone, removed $removed from the PC'
+                : 'Copied $copied file(s) to the phone',
+          ),
+        ),
       );
     } catch (error) {
       if (!mounted) return;
@@ -307,7 +322,20 @@ class _HomePageState extends State<HomePage> {
                   });
                 },
               ),
-              const SizedBox(height: 16),
+              if (job == null) ...[
+                SwitchListTile(
+                  contentPadding: EdgeInsets.zero,
+                  value: _phoneOnly,
+                  onChanged: (value) => setState(() => _phoneOnly = value),
+                  title: const Text('Phone only'),
+                  subtitle: const Text(
+                    'Delete each file from the PC once it is copied to this phone. '
+                    'Turn off to keep a copy in the PC library too.',
+                  ),
+                ),
+                const SizedBox(height: 8),
+              ],
+              const SizedBox(height: 8),
               if (job == null)
                 FilledButton.icon(
                   onPressed: _selected.isEmpty || _loading ? null : _startDownload,
@@ -389,6 +417,14 @@ class _HomePageState extends State<HomePage> {
                           _savedPath!,
                           style: theme.textTheme.bodySmall,
                         ),
+                        if (_removedFromPc > 0)
+                          Padding(
+                            padding: const EdgeInsets.only(top: 4),
+                            child: Text(
+                              'Removed $_removedFromPc file(s) from the PC.',
+                              style: theme.textTheme.bodySmall,
+                            ),
+                          ),
                       ],
                     ),
                   ),

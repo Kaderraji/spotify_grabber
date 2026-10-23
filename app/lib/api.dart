@@ -101,6 +101,7 @@ class JobInfo {
     required this.done,
     required this.failed,
     this.error,
+    this.phoneOnly = false,
   });
 
   final String id;
@@ -111,6 +112,7 @@ class JobInfo {
   final int done;
   final int failed;
   final String? error;
+  final bool phoneOnly;
 
   bool get isFinished => status == 'done' || status == 'failed';
   List<Track> get ready => tracks.where((t) => t.isDownloaded && t.file != null).toList();
@@ -122,6 +124,7 @@ class JobInfo {
       title: json['title'] as String? ?? '',
       status: json['status'] as String? ?? 'queued',
       error: json['error'] as String?,
+      phoneOnly: json['phone_only'] as bool? ?? false,
       total: (counts['total'] as num?)?.toInt() ?? 0,
       done: (counts['done'] as num?)?.toInt() ?? 0,
       failed: (counts['failed'] as num?)?.toInt() ?? 0,
@@ -173,9 +176,23 @@ class GrabberApi {
     return ResolvedLink.fromJson(response);
   }
 
-  Future<JobInfo> createJob(String url, List<String> trackIds) async {
-    final response = await _post('/jobs', {'url': url, 'track_ids': trackIds});
+  Future<JobInfo> createJob(
+    String url,
+    List<String> trackIds, {
+    bool phoneOnly = false,
+  }) async {
+    final response = await _post('/jobs', {
+      'url': url,
+      'track_ids': trackIds,
+      'phone_only': phoneOnly,
+    });
     return JobInfo.fromJson(response);
+  }
+
+  /// Deletes a phone-only job's files from the PC after they were copied.
+  Future<int> release(String jobId) async {
+    final response = await _post('/jobs/$jobId/release', const {});
+    return (response['removed'] as num?)?.toInt() ?? 0;
   }
 
   Future<JobInfo> job(String jobId) async {

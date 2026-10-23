@@ -23,7 +23,9 @@ import logging
 import os
 import queue
 import re
+import shutil
 import threading
+import time
 import urllib.request
 import uuid
 from dataclasses import dataclass, field
@@ -159,6 +161,29 @@ class Manifest:
 
 
 MANIFEST = Manifest(MANIFEST_PATH)
+
+# Phone-only jobs download here, are handed to the phone, then get deleted.
+# No leading dot: spotdl rewrites the output path and strips it, which would
+# leave the job pointing at an empty folder.
+TRANSFER_ROOT = ROOT / "transfer"
+TRANSFER_TTL = float(os.environ.get("GRABBER_TRANSFER_TTL_HOURS", "24")) * 3600
+
+
+def _sweep_transfer() -> None:
+    """Drop transfer folders the phone never collected, so nothing piles up."""
+    if not TRANSFER_ROOT.is_dir():
+        return
+    now = time.time()
+    for entry in TRANSFER_ROOT.iterdir():
+        try:
+            if entry.is_dir() and now - entry.stat().st_mtime > TRANSFER_TTL:
+                shutil.rmtree(entry, ignore_errors=True)
+                log("swept stale transfer folder %s", entry.name)
+        except OSError:
+            continue
+
+
+_sweep_transfer()
 
 # --------------------------------------------------------------------------- #
 # Spotify metadata via the public embed page
@@ -391,6 +416,7 @@ class Job:
     dir: Path
     tracks: List[TrackState]
     songs: List[Song] = field(default_factory=list, repr=False)
+    phone_only: bool = False
     status: str = "queued"  # queued | running | done | failed
     error: Optional[str] = None
     created: str = field(
@@ -415,6 +441,7 @@ class Job:
             "kind": self.kind,
             "title": self.title,
             "dir": str(self.dir),
+            "phone_only": self.phone_only,
             "status": self.status,
             "error": self.error,
             "created": self.created,
@@ -478,17 +505,18 @@ def _download_job(job: Job) -> None:
             track.size = path.stat().st_size
         except OSError:
             track.size = None
-        MANIFEST.put(
-            track.song_id,
-            {
-                "path": str(path),
-                "size": track.size,
-                "title": track.title,
-                "artists": track.artists,
-                "job": job.id,
-                "playlist": job.title,
-            },
-        )
+        if not job.phone_only:  # phone-only files never join the PC library
+            MANIFEST.put(
+                track.song_id,
+                {
+                    "path": str(path),
+                    "size": track.size,
+                    "title": track.title,
+                    "artists": track.artists,
+                    "job": job.id,
+                    "playlist": job.title,
+                },
+            )
         log("job %s done track: %s", job.id, track.file)
 
     counts = job.counts()
@@ -544,6 +572,8 @@ class UrlRequest(BaseModel):
 class JobRequest(BaseModel):
     url: str
     track_ids: Optional[List[str]] = None
+    # Delete the files from the PC once the phone has copied them.
+    phone_only: bool = False
 
 
 def _resolve_or_http(address: str) -> Resolved:
@@ -608,14 +638,18 @@ def create_job(req: JobRequest) -> Dict[str, Any]:
                 status_code=422, detail="None of those tracks are in this link."
             )
 
+    job_id = uuid.uuid4().hex[:12]
     job = Job(
-        id=uuid.uuid4().hex[:12],
+        id=job_id,
         url=resolved.url,
         kind=resolved.kind,
         title=resolved.title,
-        dir=_target_for(resolved.ident, resolved.title),
+        dir=(TRANSFER_ROOT / job_id)
+        if req.phone_only
+        else _target_for(resolved.ident, resolved.title),
         tracks=[t for _, t in pairs],
         songs=[s for s, _ in pairs],
+        phone_only=req.phone_only,
     )
     with JOBS_LOCK:
         JOBS[job.id] = job
@@ -676,6 +710,34 @@ def download_file(job_id: str, song_id: str) -> FileResponse:
         raise HTTPException(status_code=410, detail="File is gone from the server.")
     media = "audio/mp4" if path.suffix.lower() in {".m4a", ".mp4"} else "audio/mpeg"
     return FileResponse(path, media_type=media, filename=path.name)
+
+
+@app.post("/jobs/{job_id}/release")
+def release_job(job_id: str) -> Dict[str, Any]:
+    """Delete a phone-only job's files once the phone has copied them."""
+    with JOBS_LOCK:
+        job = JOBS.get(job_id)
+    if job is None:
+        raise HTTPException(status_code=404, detail="Unknown job.")
+    if not job.phone_only:
+        # Library jobs are the user's to delete; nothing removed here.
+        return {"id": job.id, "removed": 0, "dir": str(job.dir), "kept": True}
+
+    removed = 0
+    if job.dir.is_dir():
+        for child in job.dir.iterdir():
+            if child.is_file():
+                try:
+                    child.unlink()
+                    removed += 1
+                except OSError as exc:
+                    log("could not remove %s: %s", child, exc)
+        try:
+            job.dir.rmdir()
+        except OSError:
+            pass  # leftovers (lyrics, temp) are swept later
+    log("job %s released: %d file(s) removed from the PC", job.id, removed)
+    return {"id": job.id, "removed": removed, "dir": str(job.dir), "kept": False}
 
 
 if __name__ == "__main__":

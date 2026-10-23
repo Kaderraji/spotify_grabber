@@ -52,6 +52,7 @@ Environment variables (all optional):
 | `GRABBER_BITRATE` | `256k` | audio bitrate |
 | `GRABBER_AUDIO_PROVIDERS` | `youtube,soundcloud` | provider order |
 | `GRABBER_FILENAME` | `{artists} - {title}` | file name template |
+| `GRABBER_TRANSFER_TTL_HOURS` | `24` | how long uncollected phone-only files stay |
 
 Files land in `GRABBER_ROOT/<date>/<spotify-id>/`, one folder per link.
 
@@ -99,6 +100,17 @@ flutter build apk --release --dart-define=GRABBER_SERVER=http://192.168.1.20:878
 5. **Copy files to this phone** — pulls the finished files over Wi-Fi into
    `Android/data/com.spotifygrabber.spotify_grabber/files/spotify_grabber/<title>/`.
 
+### Phone only (default)
+
+The **Phone only** switch is on by default: files are downloaded into
+`<GRABBER_ROOT>/transfer/<job>/`, never added to the PC library, and deleted
+while the phone copies them (the app calls `POST /jobs/{id}/release` when the
+copy finishes). Anything the phone never collects is swept after 24 hours, so
+nothing accumulates on the PC.
+
+Turn the switch off to keep a copy in the PC library as well; those files land
+in `<GRABBER_ROOT>/<date>/<spotify-id>/` and are never touched by a release.
+
 That folder is reachable over USB (MTP) and from most file managers. Copying
 into the shared `Music` collection is not implemented yet — Android's scoped
 storage needs MediaStore or a folder picker for that.
@@ -124,6 +136,7 @@ release year tags are empty** because the embed page does not expose them.
 | `GET` | `/jobs/{id}` | status, counts and per-track state |
 | `GET` | `/jobs/{id}/files` | finished files and their download URLs |
 | `GET` | `/jobs/{id}/files/{song_id}` | the audio file itself |
+| `POST` | `/jobs/{id}/release` | deletes a phone-only job's files from the PC |
 
 Downloads run in one background worker, so jobs queue rather than collide.
 
