@@ -1,22 +1,14 @@
 import 'dart:async';
-import 'dart:io';
 
 import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
-import 'package:path_provider/path_provider.dart';
 
-import 'api.dart';
-import 'settings_page.dart';
+import 'device_downloader.dart';
+import 'models.dart';
+import 'spotify_meta.dart';
 
 class HomePage extends StatefulWidget {
-  const HomePage({
-    super.key,
-    required this.serverUrl,
-    required this.onServerChanged,
-  });
-
-  final String serverUrl;
-  final ValueChanged<String> onServerChanged;
+  const HomePage({super.key});
 
   @override
   State<HomePage> createState() => _HomePageState();
@@ -24,46 +16,74 @@ class HomePage extends StatefulWidget {
 
 class _HomePageState extends State<HomePage> {
   final TextEditingController _urlController = TextEditingController();
+  final DeviceDownloader _downloader = DeviceDownloader();
   final Set<String> _selected = <String>{};
 
+  StreamSubscription<Map<String, dynamic>>? _events;
   ResolvedLink? _link;
-  JobInfo? _job;
-  Timer? _poller;
 
-  bool _loading = false;
-  bool _saving = false;
-  bool _phoneOnly = true;
-  bool? _serverUp;
-  String _serverLabel = '';
+  /// Per-track state: 'downloading', 'done' or 'failed'. Missing means idle.
+  final Map<String, String> _states = <String, String>{};
+  final Map<String, double> _progress = <String, double>{};
+  final Map<String, String> _trackErrors = <String, String>{};
+
+  bool _resolving = false;
+  bool _busy = false;
+  bool _stopRequested = false;
+  bool? _ready;
+  String _engineStatus = 'Starting downloader…';
+  String _engineVersion = '';
   String? _error;
-  String? _savedPath;
-  int _savedCount = 0;
-  int _removedFromPc = 0;
+  String? _banner;
 
   @override
   void initState() {
     super.initState();
-    _checkServer();
+    _events = _downloader.events.listen(_onEvent);
+    _prepare();
   }
 
-  Future<void> _checkServer() async {
+  void _onEvent(Map<String, dynamic> event) {
+    if (!mounted) return;
+    final status = event['status'] as String?;
+    if (status != null) {
+      setState(() => _engineStatus = status);
+      return;
+    }
+    final id = event['id'] as String?;
+    final progress = event['progress'];
+    if (id != null && progress is num) {
+      setState(() => _progress[id] = progress.toDouble());
+    }
+  }
+
+  Future<void> _prepare() async {
+    setState(() {
+      _ready = null;
+      _engineStatus = 'Starting downloader…';
+    });
     try {
-      final info = await GrabberApi(widget.serverUrl).health();
+      final version = await _downloader.prepare();
       if (!mounted) return;
       setState(() {
-        _serverUp = true;
-        _serverLabel =
-            '${info['format']} ${info['bitrate']} · ${(info['providers'] as List?)?.join(', ') ?? ''}';
+        _ready = true;
+        _engineVersion = version;
+        _engineStatus = 'Ready';
+        _error = null;
       });
-    } catch (_) {
+    } catch (error) {
       if (!mounted) return;
-      setState(() => _serverUp = false);
+      setState(() {
+        _ready = false;
+        _engineStatus = 'Downloader unavailable';
+        _error = error.toString();
+      });
     }
   }
 
   @override
   void dispose() {
-    _poller?.cancel();
+    _events?.cancel();
     _urlController.dispose();
     super.dispose();
   }
@@ -83,221 +103,128 @@ class _HomePageState extends State<HomePage> {
       return;
     }
     FocusScope.of(context).unfocus();
-    _poller?.cancel();
     setState(() {
-      _loading = true;
+      _resolving = true;
       _error = null;
+      _banner = null;
       _link = null;
-      _job = null;
-      _savedPath = null;
-      _savedCount = 0;
       _selected.clear();
+      _states.clear();
+      _progress.clear();
+      _trackErrors.clear();
     });
-
     try {
-      final link = await GrabberApi(widget.serverUrl).resolve(url);
+      final link = await resolveSpotifyLink(url);
       if (!mounted) return;
       setState(() {
         _link = link;
-        _selected.addAll(
-          link.tracks.where((t) => !t.isDownloaded).map((t) => t.id),
-        );
-        _loading = false;
+        _selected.addAll(link.tracks.map((track) => track.id));
+        _resolving = false;
       });
     } catch (error) {
       if (!mounted) return;
       setState(() {
-        _loading = false;
+        _resolving = false;
         _error = error.toString();
       });
     }
   }
 
-  Future<void> _startDownload() async {
+  Future<void> _downloadSelected() async {
     final link = _link;
-    if (link == null || _selected.isEmpty) return;
-    setState(() {
-      _loading = true;
-      _error = null;
-      _savedPath = null;
-    });
-    try {
-      final job = await GrabberApi(widget.serverUrl)
-          .createJob(link.url, _selected.toList(), phoneOnly: _phoneOnly);
-      if (!mounted) return;
-      setState(() {
-        _job = job;
-        _loading = false;
-      });
-      _startPolling();
-    } catch (error) {
-      if (!mounted) return;
-      setState(() {
-        _loading = false;
-        _error = error.toString();
-      });
+    if (link == null || _selected.isEmpty || _busy) return;
+    if (_ready == false) {
+      await _prepare();
+      if (_ready != true) return;
     }
-  }
 
-  void _startPolling() {
-    _poller?.cancel();
-    _poller = Timer.periodic(const Duration(seconds: 2), (_) => _refreshJob());
-    _refreshJob();
-  }
-
-  Future<void> _refreshJob() async {
-    final job = _job;
-    if (job == null) return;
-    try {
-      final fresh = await GrabberApi(widget.serverUrl).job(job.id);
-      if (!mounted) return;
-      setState(() => _job = fresh);
-      if (fresh.isFinished) {
-        _poller?.cancel();
-      }
-    } catch (_) {
-      // Keep polling: a single failed poll usually means the phone lost Wi-Fi
-      // for a moment, not that the download stopped.
-    }
-  }
-
-  Future<void> _copyToPhone() async {
-    final job = _job;
-    final link = _link;
-    if (job == null || link == null) return;
-
-    final ready = job.ready;
-    if (ready.isEmpty) {
-      setState(() => _error = 'Nothing on the PC finished downloading yet.');
-      return;
-    }
+    final ids = link.tracks
+        .where((track) => _selected.contains(track.id))
+        .map((track) => track.id)
+        .toList();
 
     setState(() {
-      _saving = true;
-      _savedCount = 0;
-      _removedFromPc = 0;
+      _busy = true;
+      _stopRequested = false;
+      _banner = null;
       _error = null;
-      _savedPath = null;
+      for (final id in ids) {
+        _states[id] = 'queued';
+        _trackErrors.remove(id);
+      }
     });
 
-    try {
-      final base = await getExternalStorageDirectory();
-      if (base == null) {
-        throw ApiException('This device has no writable storage for the app.');
-      }
-      final folder = Directory(
-        '${base.path}/spotify_grabber/${_safeName(link.title)}',
-      );
-      final api = GrabberApi(widget.serverUrl);
-
-      var copied = 0;
-      for (final track in ready) {
-        await api.saveFile(
-          jobId: job.id,
-          trackId: track.id,
-          target: File('${folder.path}/${track.file}'),
+    var saved = 0;
+    for (final id in ids) {
+      if (_stopRequested) break;
+      final track = link.tracks.firstWhere((item) => item.id == id);
+      setState(() {
+        _states[id] = 'downloading';
+        _progress.remove(id);
+      });
+      try {
+        await _downloader.download(
+          id: id,
+          query: '${track.artists} - ${track.title}',
+          title: track.title,
+          artist: track.artists,
+          duration: track.duration,
+          name: _fileBaseName(track),
         );
-        copied++;
+        saved++;
         if (!mounted) return;
-        setState(() => _savedCount = copied);
+        setState(() => _states[id] = 'done');
+      } catch (error) {
+        if (!mounted) return;
+        setState(() {
+          _states[id] = 'failed';
+          _trackErrors[id] = error.toString();
+        });
       }
+    }
 
-      var removed = 0;
-      if (job.phoneOnly) {
-        removed = await api.release(job.id);
-      }
-
-      if (!mounted) return;
-      setState(() {
-        _saving = false;
-        _savedPath = folder.path;
-        _removedFromPc = removed;
-      });
+    if (!mounted) return;
+    final failed = ids.where((id) => _states[id] == 'failed').length;
+    setState(() {
+      _busy = false;
+      _banner = saved == 0
+          ? 'Nothing was saved. Check the errors below.'
+          : 'Saved $saved track(s) to Music/SpotifyGrabber'
+              '${failed > 0 ? ' · $failed failed' : ''}';
+    });
+    if (saved > 0) {
       ScaffoldMessenger.of(context).showSnackBar(
         SnackBar(
-          content: Text(
-            job.phoneOnly
-                ? 'Copied $copied file(s) to the phone, removed $removed from the PC'
-                : 'Copied $copied file(s) to the phone',
-          ),
+          content: Text('Saved $saved track(s) to Music/SpotifyGrabber'),
         ),
       );
-    } catch (error) {
-      if (!mounted) return;
-      setState(() {
-        _saving = false;
-        _error = error.toString();
-      });
     }
   }
 
-  String _safeName(String text) {
-    final cleaned = text.replaceAll(RegExp(r'[^A-Za-z0-9._-]+'), '_');
-    final trimmed = cleaned.replaceAll(RegExp(r'^[._-]+|[._-]+$'), '');
-    return trimmed.isEmpty ? 'playlist' : trimmed;
+  String _fileBaseName(Track track) {
+    final raw = '${track.artists} - ${track.title}';
+    final cleaned = raw
+        .replaceAll(RegExp(r'[\\/:*?"<>|]+'), ' ')
+        .replaceAll(RegExp(r'\s+'), ' ')
+        .trim();
+    final clipped =
+        cleaned.length > 90 ? cleaned.substring(0, 90).trim() : cleaned;
+    return clipped.isEmpty ? 'Spotify track' : clipped;
   }
 
   @override
   Widget build(BuildContext context) {
     final theme = Theme.of(context);
     final link = _link;
-    final job = _job;
-    final tracks = job?.tracks ?? link?.tracks ?? const <Track>[];
-    final finished = job?.isFinished ?? false;
 
     return Scaffold(
-      appBar: AppBar(
-        title: const Text('Spotify Grabber'),
-        actions: [
-          IconButton(
-            tooltip: 'Server settings',
-            icon: const Icon(Icons.settings),
-            onPressed: () async {
-              final updated = await Navigator.of(context).push<String>(
-                MaterialPageRoute(
-                  builder: (_) => SettingsPage(serverUrl: widget.serverUrl),
-                ),
-              );
-              if (updated != null) {
-                widget.onServerChanged(updated);
-                setState(() {
-                  _link = null;
-                  _job = null;
-                  _error = null;
-                });
-              }
-            },
-          ),
-        ],
-      ),
+      appBar: AppBar(title: const Text('Spotify Grabber')),
       body: SafeArea(
         child: ListView(
           padding: const EdgeInsets.all(16),
           children: [
-            if (_serverUp == false)
-              Padding(
-                padding: const EdgeInsets.only(bottom: 12),
-                child: _ErrorBanner(
-                  message: 'Cannot reach ${widget.serverUrl}. Make sure the PC is on '
-                      'and on the same Wi-Fi, then check Settings.',
-                ),
-              )
-            else if (_serverUp == true)
-              Padding(
-                padding: const EdgeInsets.only(bottom: 12),
-                child: Row(
-                  children: [
-                    const Icon(Icons.check_circle, size: 16, color: Colors.green),
-                    const SizedBox(width: 6),
-                    Expanded(
-                      child: Text(
-                        'PC connected · $_serverLabel',
-                        style: theme.textTheme.bodySmall,
-                      ),
-                    ),
-                  ],
-                ),
-              ),
+            _engineBanner(theme),
+            const SizedBox(height: 12),
             TextField(
               controller: _urlController,
               keyboardType: TextInputType.url,
@@ -319,30 +246,33 @@ class _HomePageState extends State<HomePage> {
               children: [
                 Expanded(
                   child: FilledButton.icon(
-                    onPressed: _loading ? null : _fetch,
-                    icon: _loading
+                    onPressed: _resolving || _busy ? null : _fetch,
+                    icon: _resolving
                         ? const SizedBox(
                             height: 16,
                             width: 16,
                             child: CircularProgressIndicator(strokeWidth: 2),
                           )
                         : const Icon(Icons.search),
-                    label: Text(_loading ? 'Reading link…' : 'Fetch tracks'),
+                    label: Text(_resolving ? 'Reading link…' : 'Fetch tracks'),
                   ),
                 ),
                 const SizedBox(width: 8),
                 TextButton(
-                  onPressed: () {
-                    _poller?.cancel();
-                    _urlController.clear();
-                    setState(() {
-                      _link = null;
-                      _job = null;
-                      _error = null;
-                      _savedPath = null;
-                      _selected.clear();
-                    });
-                  },
+                  onPressed: _busy
+                      ? null
+                      : () {
+                          _urlController.clear();
+                          setState(() {
+                            _link = null;
+                            _error = null;
+                            _banner = null;
+                            _selected.clear();
+                            _states.clear();
+                            _progress.clear();
+                            _trackErrors.clear();
+                          });
+                        },
                   child: const Text('Clear'),
                 ),
               ],
@@ -351,14 +281,43 @@ class _HomePageState extends State<HomePage> {
               const SizedBox(height: 12),
               _ErrorBanner(message: _error!),
             ],
+            if (_banner != null) ...[
+              const SizedBox(height: 12),
+              Card(
+                color: theme.colorScheme.secondaryContainer,
+                child: Padding(
+                  padding: const EdgeInsets.all(12),
+                  child: Row(
+                    children: [
+                      Icon(
+                        Icons.library_music,
+                        color: theme.colorScheme.onSecondaryContainer,
+                      ),
+                      const SizedBox(width: 8),
+                      Expanded(
+                        child: Text(
+                          _banner!,
+                          style: theme.textTheme.bodyMedium?.copyWith(
+                            color: theme.colorScheme.onSecondaryContainer,
+                          ),
+                        ),
+                      ),
+                    ],
+                  ),
+                ),
+              ),
+            ],
             if (link != null) ...[
               const SizedBox(height: 20),
               _LinkHeader(link: link, selected: _selected.length),
               const SizedBox(height: 8),
               _TrackList(
-                tracks: tracks,
+                tracks: link.tracks,
                 selected: _selected,
-                locked: job != null,
+                states: _states,
+                progress: _progress,
+                errors: _trackErrors,
+                locked: _busy,
                 onToggle: (id, value) {
                   setState(() {
                     if (value) {
@@ -369,127 +328,38 @@ class _HomePageState extends State<HomePage> {
                   });
                 },
               ),
-              if (job == null) ...[
-                SwitchListTile(
-                  contentPadding: EdgeInsets.zero,
-                  value: _phoneOnly,
-                  onChanged: (value) => setState(() => _phoneOnly = value),
-                  title: const Text('Phone only'),
-                  subtitle: const Text(
-                    'Delete each file from the PC once it is copied to this phone. '
-                    'Turn off to keep a copy in the PC library too.',
-                  ),
-                ),
-                const SizedBox(height: 8),
-              ],
               const SizedBox(height: 8),
-              if (job == null)
-                FilledButton.icon(
-                  onPressed: _selected.isEmpty || _loading ? null : _startDownload,
-                  icon: const Icon(Icons.download),
-                  label: Text(
-                    _selected.isEmpty
-                        ? 'Nothing selected'
-                        : 'Download ${_selected.length} track(s) to the PC',
-                  ),
-                ),
-            ],
-            if (job != null) ...[
-              const SizedBox(height: 16),
-              Card(
-                child: Padding(
-                  padding: const EdgeInsets.all(16),
-                  child: Column(
-                    crossAxisAlignment: CrossAxisAlignment.start,
-                    children: [
-                      Text(
-                        _statusLine(job),
-                        style: theme.textTheme.titleMedium,
-                      ),
-                      const SizedBox(height: 10),
-                      LinearProgressIndicator(
-                        value: job.total == 0 ? 0 : (job.done + job.failed) / job.total,
-                      ),
-                      const SizedBox(height: 8),
-                      Text(
-                        '${job.done} downloaded · ${job.failed} failed · '
-                        '${job.total} total',
-                        style: theme.textTheme.bodySmall,
-                      ),
-                      if (job.status == 'running' || job.status == 'queued')
-                        Padding(
-                          padding: const EdgeInsets.only(top: 8),
-                          child: Text(
-                            'Keep the app open. Files are saved on the PC.',
-                            style: theme.textTheme.bodySmall,
-                          ),
-                        ),
-                    ],
-                  ),
-                ),
-              ),
-              if (finished) ...[
-                const SizedBox(height: 12),
-                FilledButton.icon(
-                  onPressed: _saving ? null : _copyToPhone,
-                  icon: _saving
+              if (_busy)
+                OutlinedButton.icon(
+                  onPressed: _stopRequested
+                      ? null
+                      : () => setState(() => _stopRequested = true),
+                  icon: _stopRequested
                       ? const SizedBox(
                           height: 16,
                           width: 16,
                           child: CircularProgressIndicator(strokeWidth: 2),
                         )
-                      : const Icon(Icons.phone_android),
+                      : const Icon(Icons.stop_circle_outlined),
                   label: Text(
-                    _saving
-                        ? 'Copying $_savedCount of ${job.ready.length}…'
-                        : 'Copy ${job.ready.length} file(s) to this phone',
+                    _stopRequested ? 'Stopping…' : 'Stop after this track',
+                  ),
+                )
+              else
+                FilledButton.icon(
+                  onPressed: _selected.isEmpty ? null : _downloadSelected,
+                  icon: const Icon(Icons.download),
+                  label: Text(
+                    _selected.isEmpty
+                        ? 'Nothing selected'
+                        : 'Download ${_selected.length} track(s) to this phone',
                   ),
                 ),
-              ],
-              if (_savedPath != null) ...[
-                const SizedBox(height: 12),
-                Card(
-                  color: theme.colorScheme.secondaryContainer,
-                  child: Padding(
-                    padding: const EdgeInsets.all(12),
-                    child: Column(
-                      crossAxisAlignment: CrossAxisAlignment.start,
-                      children: [
-                        Text(
-                          'Saved $_savedCount file(s) on this phone',
-                          style: theme.textTheme.titleSmall,
-                        ),
-                        const SizedBox(height: 4),
-                        SelectableText(
-                          _savedPath!,
-                          style: theme.textTheme.bodySmall,
-                        ),
-                        if (_removedFromPc > 0)
-                          Padding(
-                            padding: const EdgeInsets.only(top: 4),
-                            child: Text(
-                              'Removed $_removedFromPc file(s) from the PC.',
-                              style: theme.textTheme.bodySmall,
-                            ),
-                          ),
-                      ],
-                    ),
-                  ),
-                ),
-              ],
-              if (job.tracks.any((t) => t.isFailed)) ...[
-                const SizedBox(height: 16),
-                Text('Could not download', style: theme.textTheme.titleSmall),
-                const SizedBox(height: 4),
-                for (final track in job.tracks.where((t) => t.isFailed))
-                  Padding(
-                    padding: const EdgeInsets.symmetric(vertical: 2),
-                    child: Text(
-                      '${track.artists} – ${track.title}: ${track.error ?? 'no match found'}',
-                      style: theme.textTheme.bodySmall,
-                    ),
-                  ),
-              ],
+              const SizedBox(height: 8),
+              Text(
+                'Files are saved to Music/SpotifyGrabber on this phone.',
+                style: theme.textTheme.bodySmall,
+              ),
             ],
           ],
         ),
@@ -497,26 +367,45 @@ class _HomePageState extends State<HomePage> {
     );
   }
 
-  String _statusLine(JobInfo job) {
-    switch (job.status) {
-      case 'queued':
-        return 'Waiting for the server…';
-      case 'running':
-        return 'Downloading on the PC…';
-      case 'done':
-        return job.failed == 0 ? 'All done' : 'Finished with some failures';
-      case 'failed':
-        return 'Download failed';
-      default:
-        return job.status;
+  Widget _engineBanner(ThemeData theme) {
+    final down = _ready == false;
+    if (down) {
+      return _ErrorBanner(
+        message: 'Downloader failed: $_error',
+        action: TextButton(
+          onPressed: _prepare,
+          child: const Text('Retry'),
+        ),
+      );
     }
+    final ready = _ready == true;
+    return Row(
+      children: [
+        Icon(
+          ready ? Icons.check_circle : Icons.sync,
+          size: 16,
+          color: ready ? Colors.green : theme.colorScheme.primary,
+        ),
+        const SizedBox(width: 6),
+        Expanded(
+          child: Text(
+            ready
+                ? 'Phone downloader ready'
+                    '${_engineVersion.isEmpty ? '' : ' · yt-dlp $_engineVersion'}'
+                : _engineStatus,
+            style: theme.textTheme.bodySmall,
+          ),
+        ),
+      ],
+    );
   }
 }
 
 class _ErrorBanner extends StatelessWidget {
-  const _ErrorBanner({required this.message});
+  const _ErrorBanner({required this.message, this.action});
 
   final String message;
+  final Widget? action;
 
   @override
   Widget build(BuildContext context) {
@@ -538,6 +427,7 @@ class _ErrorBanner extends StatelessWidget {
                 ),
               ),
             ),
+            if (action != null) action!,
           ],
         ),
       ),
@@ -591,8 +481,7 @@ class _LinkHeader extends StatelessWidget {
               const SizedBox(height: 2),
               Text(
                 '${link.kind} · ${link.tracks.length} track(s) · '
-                '$selected selected'
-                '${link.alreadyDownloaded > 0 ? ' · ${link.alreadyDownloaded} already on PC' : ''}',
+                '$selected selected',
                 style: theme.textTheme.bodySmall,
               ),
             ],
@@ -607,12 +496,18 @@ class _TrackList extends StatelessWidget {
   const _TrackList({
     required this.tracks,
     required this.selected,
+    required this.states,
+    required this.progress,
+    required this.errors,
     required this.locked,
     required this.onToggle,
   });
 
   final List<Track> tracks;
   final Set<String> selected;
+  final Map<String, String> states;
+  final Map<String, double> progress;
+  final Map<String, String> errors;
   final bool locked;
   final void Function(String id, bool value) onToggle;
 
@@ -625,8 +520,8 @@ class _TrackList extends StatelessWidget {
             dense: true,
             contentPadding: EdgeInsets.zero,
             controlAffinity: ListTileControlAffinity.leading,
-            value: track.isDownloaded || selected.contains(track.id),
-            onChanged: locked || track.isDownloaded
+            value: selected.contains(track.id),
+            onChanged: locked
                 ? null
                 : (value) => onToggle(track.id, value ?? false),
             title: Text(
@@ -646,17 +541,27 @@ class _TrackList extends StatelessWidget {
   }
 
   Widget? _stateIcon(BuildContext context, Track track) {
-    if (track.isDownloaded) {
+    final theme = Theme.of(context);
+    final state = states[track.id];
+    if (state == 'done') {
       return const Icon(Icons.check_circle, color: Colors.green);
     }
-    if (track.isFailed) {
-      return Icon(Icons.error, color: Theme.of(context).colorScheme.error);
+    if (state == 'failed') {
+      return Tooltip(
+        message: errors[track.id] ?? 'Download failed',
+        triggerMode: TooltipTriggerMode.tap,
+        child: Icon(Icons.error, color: theme.colorScheme.error),
+      );
     }
-    if (track.state == 'downloading') {
-      return const SizedBox(
-        height: 18,
-        width: 18,
-        child: CircularProgressIndicator(strokeWidth: 2),
+    if (state == 'downloading' || state == 'queued') {
+      final value = progress[track.id];
+      return SizedBox(
+        height: 20,
+        width: 20,
+        child: CircularProgressIndicator(
+          strokeWidth: 2,
+          value: state == 'downloading' ? value : null,
+        ),
       );
     }
     return null;
