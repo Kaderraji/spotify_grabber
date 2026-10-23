@@ -33,10 +33,33 @@ class _HomePageState extends State<HomePage> {
   bool _loading = false;
   bool _saving = false;
   bool _phoneOnly = true;
+  bool? _serverUp;
+  String _serverLabel = '';
   String? _error;
   String? _savedPath;
   int _savedCount = 0;
   int _removedFromPc = 0;
+
+  @override
+  void initState() {
+    super.initState();
+    _checkServer();
+  }
+
+  Future<void> _checkServer() async {
+    try {
+      final info = await GrabberApi(widget.serverUrl).health();
+      if (!mounted) return;
+      setState(() {
+        _serverUp = true;
+        _serverLabel =
+            '${info['format']} ${info['bitrate']} · ${(info['providers'] as List?)?.join(', ') ?? ''}';
+      });
+    } catch (_) {
+      if (!mounted) return;
+      setState(() => _serverUp = false);
+    }
+  }
 
   @override
   void dispose() {
@@ -251,6 +274,30 @@ class _HomePageState extends State<HomePage> {
         child: ListView(
           padding: const EdgeInsets.all(16),
           children: [
+            if (_serverUp == false)
+              Padding(
+                padding: const EdgeInsets.only(bottom: 12),
+                child: _ErrorBanner(
+                  message: 'Cannot reach ${widget.serverUrl}. Make sure the PC is on '
+                      'and on the same Wi-Fi, then check Settings.',
+                ),
+              )
+            else if (_serverUp == true)
+              Padding(
+                padding: const EdgeInsets.only(bottom: 12),
+                child: Row(
+                  children: [
+                    const Icon(Icons.check_circle, size: 16, color: Colors.green),
+                    const SizedBox(width: 6),
+                    Expanded(
+                      child: Text(
+                        'PC connected · $_serverLabel',
+                        style: theme.textTheme.bodySmall,
+                      ),
+                    ),
+                  ],
+                ),
+              ),
             TextField(
               controller: _urlController,
               keyboardType: TextInputType.url,
