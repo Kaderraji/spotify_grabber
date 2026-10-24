@@ -1,5 +1,6 @@
 package com.spotifygrabber.spotify_grabber
 
+import android.content.Intent
 import android.os.Handler
 import android.os.Looper
 import io.flutter.embedding.android.FlutterActivity
@@ -13,8 +14,19 @@ class MainActivity : FlutterActivity() {
     private val worker = Executors.newSingleThreadExecutor()
     private val main = Handler(Looper.getMainLooper())
     private var progressSink: EventChannel.EventSink? = null
+    private var shareChannel: MethodChannel? = null
+    private var pendingLink: String? = null
     private lateinit var downloader: OnDeviceDownloader
     private val prefs by lazy { getSharedPreferences("grabber", MODE_PRIVATE) }
+
+    private companion object {
+        val SPOTIFY_LINK = Regex(
+            """(?:https?://)?open\.spotify\.com/(?:intl-[a-z-]+/)?""" +
+                """(?:track|playlist|album)/[A-Za-z0-9]{22}""" +
+                """|spotify:(?:track|playlist|album):[A-Za-z0-9]{22}""",
+            RegexOption.IGNORE_CASE,
+        )
+    }
 
     override fun configureFlutterEngine(flutterEngine: FlutterEngine) {
         super.configureFlutterEngine(flutterEngine)
@@ -34,6 +46,23 @@ class MainActivity : FlutterActivity() {
                 }
             },
         )
+
+        // Links shared into the app: the launch intent before Flutter asks for
+        // it, and later shares pushed over the channel.
+        val share = MethodChannel(
+            flutterEngine.dartExecutor.binaryMessenger,
+            "grabber/share",
+        )
+        share.setMethodCallHandler { call, result ->
+            if (call.method == "getInitialLink") {
+                result.success(pendingLink)
+                pendingLink = null
+            } else {
+                result.notImplemented()
+            }
+        }
+        shareChannel = share
+        pendingLink = pendingLink ?: spotifyLinkIn(intent)
 
         MethodChannel(
             flutterEngine.dartExecutor.binaryMessenger,
@@ -100,6 +129,37 @@ class MainActivity : FlutterActivity() {
 
                 else -> result.notImplemented()
             }
+        }
+    }
+
+    override fun onNewIntent(intent: Intent) {
+        super.onNewIntent(intent)
+        setIntent(intent)
+        val link = spotifyLinkIn(intent) ?: return
+        val channel = shareChannel
+        if (channel == null) {
+            pendingLink = link
+        } else {
+            channel.invokeMethod("sharedLink", link)
+        }
+    }
+
+    /**
+     * Pulls the first Spotify link out of a shared text body. Spotify wraps the
+     * link in a sentence ("Never Gonna Give You Up – Rick Astley ..."), and
+     * some clients drop the https:// prefix.
+     */
+    private fun spotifyLinkIn(intent: Intent?): String? {
+        if (intent?.action != Intent.ACTION_SEND) return null
+        if (intent.type?.startsWith("text/") != true) return null
+        val text = intent.getStringExtra(Intent.EXTRA_TEXT)?.trim()
+        if (text.isNullOrEmpty()) return null
+        val match = SPOTIFY_LINK.find(text)?.value ?: return null
+        return when {
+            match.startsWith("spotify:") -> match
+            // The scheme is optional in the pattern, so it may already be there.
+            match.startsWith("http", ignoreCase = true) -> match
+            else -> "https://$match"
         }
     }
 

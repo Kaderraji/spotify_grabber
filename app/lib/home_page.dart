@@ -7,6 +7,7 @@ import 'package:flutter/services.dart';
 import 'audio_format.dart';
 import 'device_downloader.dart';
 import 'models.dart';
+import 'share_intake.dart';
 import 'spotify_meta.dart';
 
 class HomePage extends StatefulWidget {
@@ -19,6 +20,8 @@ class HomePage extends StatefulWidget {
 class _HomePageState extends State<HomePage> {
   final TextEditingController _urlController = TextEditingController();
   final DeviceDownloader _downloader = DeviceDownloader();
+  final ShareIntake _share = ShareIntake();
+  StreamSubscription<String>? _sharedLinks;
   final Set<String> _selected = <String>{};
 
   /// Per-track state: 'queued', 'downloading', 'done' or 'failed'.
@@ -45,40 +48,40 @@ class _HomePageState extends State<HomePage> {
   void initState() {
     super.initState();
     _events = _downloader.events.listen(_onEvent);
+    _sharedLinks = _share.links.listen(_acceptShared);
     _prepare();
     _restoreFormat();
-    _maybePreview();
+    _takeLaunchLink();
   }
 
-  // Temporary: --dart-define=PREVIEW_URL=<link> fills the screen for a
-  // screenshot check; PREVIEW_FORMAT also switches the saved format.
-  Future<void> _maybePreview() async {
-    const url = String.fromEnvironment('PREVIEW_URL');
-    const formatId = String.fromEnvironment('PREVIEW_FORMAT');
-    if (formatId.isNotEmpty) {
-      final format = AudioFormat.byId(formatId);
-      setState(() => _format = format);
-      await _downloader.rememberFormat(format);
-    }
-    if (url.isEmpty) return;
-    const sheet = String.fromEnvironment('PREVIEW_SHEET');
-    if (sheet.isNotEmpty) {
-      SystemChrome.setPreferredOrientations(
-        [DeviceOrientation.portraitUp],
+  /// The app may have been opened by "Share → Spotify Grabber".
+  Future<void> _takeLaunchLink() async {
+    final link = await _share.launchLink();
+    if (!mounted || link == null) return;
+    _acceptShared(link);
+  }
+
+  /// Fills the field with a shared link and, when nothing is in flight, reads
+  /// it straight away so the shared song is what the user sees.
+  void _acceptShared(String link) {
+    if (!mounted) return;
+    _urlController.text = link;
+    if (_busy) {
+      ScaffoldMessenger.of(context).showSnackBar(
+        const SnackBar(
+          content: Text('Link received. Fetch it when this download finishes.'),
+        ),
       );
+      return;
     }
-    _urlController.text = url;
-    WidgetsBinding.instance.addPostFrameCallback((_) => _fetch());
-    if (sheet.isNotEmpty) {
-      Timer(const Duration(seconds: 12), () {
-        if (mounted) _pickFormat();
-      });
-    }
+    _fetch();
   }
 
   @override
   void dispose() {
     _events?.cancel();
+    _sharedLinks?.cancel();
+    _share.dispose();
     _urlController.dispose();
     super.dispose();
   }

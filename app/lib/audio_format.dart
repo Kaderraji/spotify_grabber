@@ -27,7 +27,7 @@ class AudioFormat {
       label: 'M4A (AAC)',
       tagline: 'What Spotify itself serves. Balanced quality and size, and '
           'every Android phone plays it.',
-      size: '≈ 4 MB per track',
+      size: '≈ 10 MB per 4-minute track',
       icon: Icons.graphic_eq,
       recommended: true,
     ),
@@ -36,7 +36,7 @@ class AudioFormat {
       label: 'MP3 (192 kbps)',
       tagline: 'Old faithful. Opens on anything — car stereos, old MP3 '
           'players, every app ever made.',
-      size: '≈ 4.5 MB per track',
+      size: '≈ 5 MB per 4-minute track',
       icon: Icons.audiotrack,
     ),
     AudioFormat(
@@ -44,15 +44,15 @@ class AudioFormat {
       label: 'Opus',
       tagline: 'Half the size at the same quality. Needs a reasonably recent '
           'player (Android 10+ is fine).',
-      size: '≈ 2.5 MB per track',
+      size: '≈ 3.5 MB per 4-minute track',
       icon: Icons.compress,
     ),
     AudioFormat(
       id: 'flac',
       label: 'FLAC (lossless)',
-      tagline: 'Nothing thrown away — the source codec kept intact, for '
-          'good headphones and archiving.',
-      size: '≈ 30 MB per track',
+      tagline: 'Saved without the lossy step, for good headphones and '
+          'archiving. Biggest files by far.',
+      size: '≈ 45 MB per 4-minute track',
       icon: Icons.surround_sound,
     ),
   ];

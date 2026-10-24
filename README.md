@@ -9,7 +9,7 @@ server, no Wi-Fi requirement beyond the phone's own connection.
 | Step | What runs |
 |---|---|
 | Read the link | `lib/spotify_meta.dart` fetches `open.spotify.com/embed/{kind}/{id}` and parses the track list |
-| Download | `youtubedl-android` (yt-dlp + ffmpeg bundled in the APK) runs `ytsearch1:<artist> - <title>` and extracts m4a |
+| Download | `youtubedl-android` (yt-dlp + ffmpeg bundled in the APK) runs `ytsearch1:<artist> - <title>` and extracts the chosen format |
 | Save | `OnDeviceDownloader.kt` copies the finished file into the music library through MediaStore |
 
 The details that make this work:
@@ -27,6 +27,13 @@ The details that make this work:
 - **Spotify metadata comes from the embed page**, not the Web API (which now
   needs a Premium account to create keys). Title, artists and track order are
   exact; album and release year are not exposed there.
+- **File tags are rewritten to the Spotify values.** yt-dlp's own tags carry the
+  YouTube title (`... (Official Video) (4K Remaster)`) and the channel name, so
+  `--replace-in-metadata` overwrites title and artist before the tags are
+  written. Without it a player would show the upload name, not the song name.
+- **One copy per song.** Each save first deletes any earlier file with the same
+  `artist - title` stem in `Music/SpotifyGrabber`, whatever extension, so
+  switching formats replaces the old download instead of duplicating it.
 
 ## Requirements
 
@@ -49,6 +56,12 @@ adb install -r build/app/outputs/flutter-apk/app-debug.apk
 `youtubedl-android` AARs still carry all four ABIs, so the APK is around 250 MB.
 Use `--release` for a faster build (size is dominated by those libraries).
 
+Gradle downloads the Flutter engine jars from `storage.googleapis.com`. If that
+host is blocked the build hangs at `Running Gradle task 'assembleDebug'...`;
+the jars are already in `$FLUTTER_ROOT/bin/cache/artifacts/engine/*/flutter.jar`,
+so serve them as a local Maven repo and build with
+`FLUTTER_STORAGE_BASE_URL=file://<that repo>`.
+
 Two build details are already configured here:
 
 - `android/local.properties` (git-ignored) holds
@@ -63,7 +76,9 @@ unlocked (and "Install via USB" enabled in Developer options).
 
 ## Using it
 
-1. Copy the link from Spotify's share menu, paste it into the app.
+1. Copy the link from Spotify's share menu and paste it into the app — or
+   share it straight to *Spotify Grabber* from Spotify's share sheet and the
+   link is pasted and fetched for you.
 2. **Fetch tracks** — every track is listed with its length; untick what you
    don't want, or use *Select all* / *None*.
 3. Pick a **format** (see below). The choice is remembered.
@@ -76,16 +91,27 @@ unlocked (and "Install via USB" enabled in Developer options).
 Failures show the reason under the track (usually "No audio found for ..." when
 YouTube has no close-duration match).
 
+The app registers for `ACTION_SEND` of `text/plain`, so it shows up in the
+system share sheet for any text. The shared text is scanned for a track, album
+or playlist link (Spotify usually wraps it in a “song – artist … #Spotify”
+line) and the bare link is what fills the field. Sharing while a download is
+running leaves the link in the field and asks you to fetch it afterwards
+instead of interrupting the queue.
+
 ## Formats
 
 The format sheet shows what each option is for and roughly how big a track gets:
 
-| Format | Why pick it | Approx. size |
+| Format | Why pick it | Measured size |
 |---|---|---|
-| M4A (AAC) | Spotify's own codec; balanced, plays everywhere (default) | ≈ 4 MB |
-| MP3 (192 kbps) | Opens on absolutely anything, old players included | ≈ 4.5 MB |
-| Opus | Smallest file at the same quality; needs a recent player | ≈ 2.5 MB |
-| FLAC | Lossless, for good headphones and archiving | ≈ 30 MB |
+| M4A (AAC) | Spotify's own codec; balanced, plays everywhere (default) | 11.5 MB |
+| MP3 (192 kbps) | Opens on absolutely anything, old players included | 5.2 MB |
+| Opus | Smallest file at the same quality; needs a recent player | 3.4 MB |
+| FLAC | Saved without the lossy step, for archiving | 47 MB |
+
+Those are real numbers from one 3:33 track on the phone, not estimates; the
+in-app sheet rounds them to "per 4-minute track". M4A is large because
+`--audio-quality 0` lets ffmpeg encode AAC at its best VBR setting.
 
 The format is passed to yt-dlp as `--audio-format` plus ffmpeg re-encodes it;
 cover art and tags are embedded for every option. The choice is stored in the
