@@ -21,6 +21,9 @@ class AudioFormat {
 
   String get shortLabel => label.split(' (').first;
 
+  /// "≈ 10 MB" — the size without the per-track explanation.
+  String get shortSize => size.split(' per ').first;
+
   static const List<AudioFormat> all = <AudioFormat>[
     AudioFormat(
       id: 'm4a',

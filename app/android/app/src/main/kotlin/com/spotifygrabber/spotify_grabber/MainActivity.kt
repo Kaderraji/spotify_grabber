@@ -19,11 +19,14 @@ class MainActivity : FlutterActivity() {
     private var progressSink: EventChannel.EventSink? = null
     private var shareChannel: MethodChannel? = null
     private var pendingLink: String? = null
+    private var pendingRejected: String? = null
     private var notifiedPercent = -1
     private lateinit var downloader: OnDeviceDownloader
     private val prefs by lazy { getSharedPreferences("grabber", MODE_PRIVATE) }
 
     private companion object {
+        const val MAX_PREVIEW = 160
+
         val SPOTIFY_LINK = Regex(
             """(?:https?://)?open\.spotify\.com/(?:intl-[a-z-]+/)?""" +
                 """(?:track|playlist|album)/[A-Za-z0-9]{22}""" +
@@ -58,15 +61,48 @@ class MainActivity : FlutterActivity() {
             "grabber/share",
         )
         share.setMethodCallHandler { call, result ->
-            if (call.method == "getInitialLink") {
-                result.success(pendingLink)
-                pendingLink = null
-            } else {
-                result.notImplemented()
+            when (call.method) {
+                // Both halves of a share: a link to use, or text to complain
+                // about because it holds no Spotify link.
+                "getInitialShare" -> {
+                    result.success(
+                        mapOf("link" to pendingLink, "rejected" to pendingRejected),
+                    )
+                    pendingLink = null
+                    pendingRejected = null
+                }
+
+                else -> result.notImplemented()
             }
         }
         shareChannel = share
-        pendingLink = pendingLink ?: spotifyLinkIn(intent)
+        if (pendingLink == null && pendingRejected == null) takeShare(intent)
+
+        // Theme mode and the saved-track history live in the same preferences;
+        // the app owns their JSON shape, this side only stores the strings.
+        MethodChannel(
+            flutterEngine.dartExecutor.binaryMessenger,
+            "grabber/store",
+        ).setMethodCallHandler { call, result ->
+            val key = call.argument<String>("key")
+            when (call.method) {
+                "read" -> result.success(
+                    if (key == null) null else prefs.getString("store.$key", null),
+                )
+
+                "write" -> {
+                    val value = call.argument<String>("value")
+                    if (key == null || value == null) {
+                        result.error("bad_args", "key and value are required", null)
+                    } else {
+                        prefs.edit().putString("store.$key", value).apply()
+                        result.success(null)
+                    }
+                }
+
+                else -> result.notImplemented()
+            }
+        }
 
         MethodChannel(
             flutterEngine.dartExecutor.binaryMessenger,
@@ -180,8 +216,14 @@ class MainActivity : FlutterActivity() {
     override fun onNewIntent(intent: Intent) {
         super.onNewIntent(intent)
         setIntent(intent)
-        val link = spotifyLinkIn(intent) ?: return
+        val text = sharedText(intent) ?: return
+        val link = spotifyLinkIn(text)
         val channel = shareChannel
+        if (link == null) {
+            if (channel == null) pendingRejected = text.take(MAX_PREVIEW) else
+                channel.invokeMethod("sharedRejected", text.take(MAX_PREVIEW))
+            return
+        }
         if (channel == null) {
             pendingLink = link
         } else {
@@ -189,16 +231,27 @@ class MainActivity : FlutterActivity() {
         }
     }
 
+    /** Remembers what a launching share intent carried, if anything. */
+    private fun takeShare(intent: Intent?) {
+        val text = sharedText(intent) ?: return
+        val link = spotifyLinkIn(text)
+        if (link != null) pendingLink = link else pendingRejected = text.take(MAX_PREVIEW)
+    }
+
+    /** The text body of a shared item, or null when this is not a share. */
+    private fun sharedText(intent: Intent?): String? {
+        if (intent?.action != Intent.ACTION_SEND) return null
+        if (intent.type?.startsWith("text/") != true) return null
+        val text = intent.getStringExtra(Intent.EXTRA_TEXT)?.trim()
+        return if (text.isNullOrEmpty()) null else text
+    }
+
     /**
      * Pulls the first Spotify link out of a shared text body. Spotify wraps the
      * link in a sentence ("Never Gonna Give You Up – Rick Astley ..."), and
      * some clients drop the https:// prefix.
      */
-    private fun spotifyLinkIn(intent: Intent?): String? {
-        if (intent?.action != Intent.ACTION_SEND) return null
-        if (intent.type?.startsWith("text/") != true) return null
-        val text = intent.getStringExtra(Intent.EXTRA_TEXT)?.trim()
-        if (text.isNullOrEmpty()) return null
+    private fun spotifyLinkIn(text: String): String? {
         val match = SPOTIFY_LINK.find(text)?.value ?: return null
         return when {
             match.startsWith("spotify:") -> match

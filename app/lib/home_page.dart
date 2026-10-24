@@ -4,14 +4,23 @@ import 'dart:math' as math;
 import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
 
+import 'app_theme.dart';
 import 'audio_format.dart';
 import 'device_downloader.dart';
+import 'history_page.dart';
 import 'models.dart';
 import 'share_intake.dart';
 import 'spotify_meta.dart';
+import 'store.dart';
+
+// TEMPORARY: drives a download without a tap while testing on the phone.
+const _autostart = true;
 
 class HomePage extends StatefulWidget {
-  const HomePage({super.key});
+  const HomePage({super.key, this.themeMode = ThemeMode.system, this.onThemeMode});
+
+  final ThemeMode themeMode;
+  final ValueChanged<ThemeMode>? onThemeMode;
 
   @override
   State<HomePage> createState() => _HomePageState();
@@ -21,7 +30,8 @@ class _HomePageState extends State<HomePage> {
   final TextEditingController _urlController = TextEditingController();
   final DeviceDownloader _downloader = DeviceDownloader();
   final ShareIntake _share = ShareIntake();
-  StreamSubscription<String>? _sharedLinks;
+  final Store _store = Store();
+  StreamSubscription<ShareEvent>? _sharedEvents;
   final Set<String> _selected = <String>{};
 
   /// Per-track state: 'queued', 'downloading', 'done' or 'failed'.
@@ -40,6 +50,7 @@ class _HomePageState extends State<HomePage> {
   String _engineStatus = 'Starting downloader…';
   String _engineVersion = '';
   String? _error;
+  String? _shareNotice;
   String? _banner;
   int _busyDone = 0;
   int _busyTotal = 0;
@@ -48,23 +59,31 @@ class _HomePageState extends State<HomePage> {
   void initState() {
     super.initState();
     _events = _downloader.events.listen(_onEvent);
-    _sharedLinks = _share.links.listen(_acceptShared);
+    _sharedEvents = _share.events.listen(_applyShare);
     _prepare();
     _restoreFormat();
-    _takeLaunchLink();
+    _takeLaunchShare();
   }
 
   /// The app may have been opened by "Share → Spotify Grabber".
-  Future<void> _takeLaunchLink() async {
-    final link = await _share.launchLink();
-    if (!mounted || link == null) return;
-    _acceptShared(link);
+  Future<void> _takeLaunchShare() async {
+    final share = await _share.launchShare();
+    if (!mounted || share == null) return;
+    _applyShare(share);
   }
 
-  /// Fills the field with a shared link and, when nothing is in flight, reads
-  /// it straight away so the shared song is what the user sees.
-  void _acceptShared(String link) {
+  /// Uses a shared link, or explains why the shared text could not be used.
+  void _applyShare(ShareEvent share) {
     if (!mounted) return;
+    final link = share.link;
+    if (link == null || link.isEmpty) {
+      setState(() {
+        _shareNotice = "That share had no Spotify link in it. Copy the link "
+            'from Spotify’s ••• menu and paste it here.';
+      });
+      return;
+    }
+    setState(() => _shareNotice = null);
     _urlController.text = link;
     if (_busy) {
       ScaffoldMessenger.of(context).showSnackBar(
@@ -80,7 +99,7 @@ class _HomePageState extends State<HomePage> {
   @override
   void dispose() {
     _events?.cancel();
-    _sharedLinks?.cancel();
+    _sharedEvents?.cancel();
     _share.dispose();
     _urlController.dispose();
     super.dispose();
@@ -118,7 +137,6 @@ class _HomePageState extends State<HomePage> {
         _ready = true;
         _engineVersion = version;
         _engineStatus = 'Ready';
-        _error = null;
       });
     } catch (error) {
       if (!mounted) return;
@@ -134,20 +152,27 @@ class _HomePageState extends State<HomePage> {
     final data = await Clipboard.getData(Clipboard.kTextPlain);
     final text = data?.text?.trim();
     if (text != null && text.isNotEmpty) {
-      setState(() => _urlController.text = text);
+      setState(() {
+        _urlController.text = text;
+        _shareNotice = null;
+      });
     }
   }
 
   Future<void> _fetch() async {
     final url = _urlController.text.trim();
     if (url.isEmpty) {
-      setState(() => _error = 'Paste a Spotify link first.');
+      setState(() {
+        _error = 'Paste a Spotify link first.';
+        _shareNotice = null;
+      });
       return;
     }
     FocusScope.of(context).unfocus();
     setState(() {
       _resolving = true;
       _error = null;
+      _shareNotice = null;
       _banner = null;
       _link = null;
       _selected.clear();
@@ -163,6 +188,7 @@ class _HomePageState extends State<HomePage> {
         _selected.addAll(link.tracks.map((track) => track.id));
         _resolving = false;
       });
+      if (_autostart) _downloadSelected();
     } catch (error) {
       if (!mounted) return;
       setState(() {
@@ -177,6 +203,7 @@ class _HomePageState extends State<HomePage> {
     setState(() {
       _link = null;
       _error = null;
+      _shareNotice = null;
       _banner = null;
       _selected.clear();
       _states.clear();
@@ -195,6 +222,12 @@ class _HomePageState extends State<HomePage> {
     if (picked == null || !mounted) return;
     setState(() => _format = picked);
     await _downloader.rememberFormat(picked);
+  }
+
+  Future<void> _openHistory() async {
+    await Navigator.of(context).push(
+      MaterialPageRoute<void>(builder: (_) => const HistoryPage()),
+    );
   }
 
   Future<void> _downloadSelected() async {
@@ -222,7 +255,7 @@ class _HomePageState extends State<HomePage> {
       }
     });
 
-    var saved = 0;
+    var savedCount = 0;
     // Holds the phone awake for the whole queue, so the screen going off or
     // the app moving to the background does not pause it.
     await _downloader.startQueue(tracks.length);
@@ -234,7 +267,7 @@ class _HomePageState extends State<HomePage> {
           _progress.remove(track.id);
         });
         try {
-          await _downloader.download(
+          final result = await _downloader.download(
             id: track.id,
             query: '${track.artists} - ${track.title}',
             title: track.title,
@@ -245,7 +278,17 @@ class _HomePageState extends State<HomePage> {
             position: _busyDone + 1,
             total: tracks.length,
           );
-          saved++;
+          savedCount++;
+          await _store.addSaved(
+            SavedTrack(
+              title: track.title,
+              artist: track.artists,
+              format: _format.shortLabel,
+              bytes: result.size,
+              savedAt: DateTime.now(),
+              path: result.path,
+            ),
+          );
           if (!mounted) return;
           setState(() => _states[track.id] = 'done');
         } catch (error) {
@@ -259,24 +302,24 @@ class _HomePageState extends State<HomePage> {
         setState(() => _busyDone++);
       }
     } finally {
-      await _downloader.stopQueue(saved);
+      await _downloader.stopQueue(savedCount);
     }
 
     if (!mounted) return;
     final failed = tracks.where((track) => _states[track.id] == 'failed').length;
     setState(() {
       _busy = false;
-      _banner = saved == 0
+      _banner = savedCount == 0
           ? 'Nothing was saved — see the errors on each track.'
-          : 'Saved $saved track${saved == 1 ? '' : 's'} to Music/SpotifyGrabber'
+          : 'Saved $savedCount track${savedCount == 1 ? '' : 's'} to '
+              'Music/SpotifyGrabber'
               '${failed > 0 ? ' · $failed failed' : ''}';
     });
-    if (saved > 0) {
+    if (savedCount > 0) {
       ScaffoldMessenger.of(context).showSnackBar(
         SnackBar(
-          behavior: SnackBarBehavior.floating,
           content: Text(
-            'Saved $saved track${saved == 1 ? '' : 's'} · ${_format.label}',
+            'Saved $savedCount track${savedCount == 1 ? '' : 's'} · ${_format.label}',
           ),
         ),
       );
@@ -303,45 +346,82 @@ class _HomePageState extends State<HomePage> {
     return Scaffold(
       body: SafeArea(
         bottom: false,
-        child: ListView(
-          padding: const EdgeInsets.fromLTRB(20, 12, 20, 28),
+        child: Column(
           children: [
-            _Header(
-              ready: _ready,
-              status: _engineStatus,
-              version: _engineVersion,
-              onRetry: _prepare,
+            _TopBar(
+              themeMode: widget.themeMode,
+              onThemeMode: widget.onThemeMode,
+              onHistory: _openHistory,
             ),
-            const SizedBox(height: 20),
-            _linkCard(theme),
-            if (_error != null) ...[
-              const SizedBox(height: 14),
-              _ErrorBanner(message: _error!),
-            ],
-            if (_banner != null) ...[
-              const SizedBox(height: 14),
-              _SavedBanner(message: _banner!),
-            ],
-            if (link == null) ...[
-              const SizedBox(height: 20),
-              const _HowItWorks(),
-            ] else ...[
-              const SizedBox(height: 18),
-              _LinkSummary(
-                link: link,
-                selected: _selected.length,
-                onAll: () => setState(() {
-                  _selected
-                    ..clear()
-                    ..addAll(tracks.map((track) => track.id));
-                }),
-                onNone: () => setState(_selected.clear),
+            const Divider(),
+            Expanded(
+              child: ListView(
+                padding: const EdgeInsets.fromLTRB(16, 16, 16, 32),
+                children: [
+                  _linkField(theme),
+                  const SizedBox(height: 10),
+                  _statusLine(theme),
+                  if (_shareNotice != null) ...[
+                    const SizedBox(height: 14),
+                    _Notice(
+                      icon: Icons.link_off_rounded,
+                      message: _shareNotice!,
+                    ),
+                  ],
+                  if (_error != null) ...[
+                    const SizedBox(height: 14),
+                    _Notice(
+                      icon: Icons.error_outline_rounded,
+                      message: _error!,
+                      tone: _NoticeTone.error,
+                    ),
+                  ],
+                  if (_banner != null) ...[
+                    const SizedBox(height: 14),
+                    _Notice(
+                      icon: Icons.library_music_rounded,
+                      message: _banner!,
+                      action: TextButton(
+                        onPressed: _openHistory,
+                        child: const Text('History'),
+                      ),
+                    ),
+                  ],
+                  if (link == null) ...[
+                    const SizedBox(height: 28),
+                    _emptyState(theme),
+                  ] else ...[
+                    const SizedBox(height: 28),
+                    _linkSummary(theme, link, tracks),
+                    const SizedBox(height: 20),
+                    _formatRow(theme),
+                    const SizedBox(height: 12),
+                    _selectionRow(theme, tracks),
+                    const Divider(),
+                    for (var i = 0; i < tracks.length; i++) ...[
+                      if (i > 0) const Divider(),
+                      _TrackRow(
+                        track: tracks[i],
+                        selected: _selected.contains(tracks[i].id),
+                        state: _states[tracks[i].id],
+                        progress: _progress[tracks[i].id],
+                        error: _trackErrors[tracks[i].id],
+                        locked: _busy,
+                        onToggle: (value) {
+                          setState(() {
+                            if (value) {
+                              _selected.add(tracks[i].id);
+                            } else {
+                              _selected.remove(tracks[i].id);
+                            }
+                          });
+                        },
+                      ),
+                    ],
+                  ],
+                ],
               ),
-              const SizedBox(height: 12),
-              _formatTile(theme),
-              const SizedBox(height: 12),
-              _trackList(theme, tracks),
-            ],
+            ),
           ],
         ),
       ),
@@ -349,331 +429,334 @@ class _HomePageState extends State<HomePage> {
     );
   }
 
-  Widget _linkCard(ThemeData theme) {
-    return _Panel(
-      padding: const EdgeInsets.fromLTRB(16, 6, 10, 10),
-      child: Column(
-        children: [
-          TextField(
+  Widget _linkField(ThemeData theme) {
+    final canFetch = !_resolving && !_busy;
+    return Row(
+      children: [
+        Expanded(
+          child: TextField(
             controller: _urlController,
             keyboardType: TextInputType.url,
             textInputAction: TextInputAction.go,
             enabled: !_busy,
             onSubmitted: (_) => _fetch(),
-            style: theme.textTheme.bodyLarge,
+            style: theme.textTheme.bodyMedium,
             decoration: InputDecoration(
-              hintText: 'Paste a Spotify track, album or playlist link',
-              hintStyle: theme.textTheme.bodyMedium?.copyWith(
-                color: theme.colorScheme.onSurfaceVariant,
-              ),
+              hintText: 'Paste a Spotify link',
               prefixIcon: const Icon(Icons.link_rounded, size: 20),
-              suffixIcon: IconButton(
-                tooltip: 'Paste from clipboard',
-                icon: const Icon(Icons.content_paste_rounded, size: 20),
-                onPressed: _busy ? null : _pasteFromClipboard,
-              ),
-              border: InputBorder.none,
-              isDense: true,
-              contentPadding: const EdgeInsets.symmetric(vertical: 16),
+              prefixIconConstraints: const BoxConstraints(minWidth: 40),
+              suffixIcon: _link == null
+                  ? IconButton(
+                      tooltip: 'Paste from clipboard',
+                      icon: const Icon(Icons.content_paste_rounded, size: 20),
+                      onPressed: _busy ? null : _pasteFromClipboard,
+                    )
+                  : IconButton(
+                      tooltip: 'Clear link',
+                      icon: const Icon(Icons.close_rounded, size: 20),
+                      onPressed: _busy ? null : _clearLink,
+                    ),
             ),
           ),
-          Row(
-            children: [
-              if (_link != null)
-                TextButton(
-                  onPressed: _busy ? null : _clearLink,
-                  child: const Text('Clear'),
-                ),
-              const Spacer(),
-              FilledButton.icon(
-                onPressed: _resolving || _busy ? null : _fetch,
-                icon: _resolving
-                    ? const SizedBox(
-                        height: 16,
-                        width: 16,
-                        child: CircularProgressIndicator(strokeWidth: 2),
-                      )
-                    : const Icon(Icons.arrow_forward_rounded, size: 20),
-                label: Text(_resolving ? 'Reading link…' : 'Fetch tracks'),
-              ),
-            ],
-          ),
-        ],
-      ),
+        ),
+        const SizedBox(width: 8),
+        FilledButton.tonal(
+          onPressed: canFetch ? _fetch : null,
+          child: _resolving
+              ? const SizedBox(
+                  height: 16,
+                  width: 16,
+                  child: CircularProgressIndicator(strokeWidth: 2),
+                )
+              : const Text('Fetch'),
+        ),
+      ],
     );
   }
 
-  Widget _formatTile(ThemeData theme) {
-    return _Panel(
-      padding: EdgeInsets.zero,
-      child: ListTile(
-        contentPadding: const EdgeInsets.symmetric(horizontal: 16, vertical: 6),
-        shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(20)),
-        onTap: _busy ? null : _pickFormat,
-        leading: Container(
-          height: 42,
-          width: 42,
+  Widget _statusLine(ThemeData theme) {
+    final failed = _ready == false;
+    final label = switch (_ready) {
+      true => 'yt-dlp ${_engineVersion.isEmpty ? 'ready' : _engineVersion.split('.').take(3).join('.')}'
+          ' · on this phone',
+      false => 'Downloader unavailable',
+      null => _engineStatus,
+    };
+    return Row(
+      children: [
+        Container(
+          height: 6,
+          width: 6,
           decoration: BoxDecoration(
-            color: theme.colorScheme.secondaryContainer,
-            borderRadius: BorderRadius.circular(12),
-          ),
-          child: Icon(
-            _format.icon,
-            size: 22,
-            color: theme.colorScheme.onSecondaryContainer,
+            shape: BoxShape.circle,
+            color: failed
+                ? theme.colorScheme.error
+                : _ready == true
+                    ? kAccent
+                    : theme.colorScheme.outline,
           ),
         ),
-        title: Text('Format · ${_format.label}',
-            style: theme.textTheme.titleSmall),
-        subtitle: Text(
-          '${_format.size} · tap to change',
+        const SizedBox(width: 7),
+        Expanded(
+          child: Text(
+            label,
+            maxLines: 1,
+            overflow: TextOverflow.ellipsis,
+            style: theme.textTheme.bodySmall?.copyWith(
+              color: theme.colorScheme.onSurfaceVariant,
+            ),
+          ),
+        ),
+        if (failed)
+          TextButton(
+            onPressed: _prepare,
+            style: TextButton.styleFrom(
+              visualDensity: VisualDensity.compact,
+              minimumSize: const Size(0, 32),
+            ),
+            child: const Text('Retry'),
+          ),
+      ],
+    );
+  }
+
+  Widget _emptyState(ThemeData theme) {
+    return Column(
+      crossAxisAlignment: CrossAxisAlignment.start,
+      children: [
+        Text('Nothing loaded', style: theme.textTheme.titleSmall),
+        const SizedBox(height: 4),
+        Text(
+          'Paste a link above, or share one from Spotify and pick '
+          'Spotify Grabber.',
           style: theme.textTheme.bodySmall?.copyWith(
             color: theme.colorScheme.onSurfaceVariant,
           ),
         ),
-        trailing: const Icon(Icons.unfold_more_rounded, size: 20),
+        const SizedBox(height: 12),
+        TextButton.icon(
+          onPressed: _busy ? null : _pasteFromClipboard,
+          icon: const Icon(Icons.content_paste_rounded, size: 18),
+          label: const Text('Paste from clipboard'),
+          style: TextButton.styleFrom(
+            padding: const EdgeInsets.symmetric(horizontal: 8),
+          ),
+        ),
+      ],
+    );
+  }
+
+  Widget _linkSummary(ThemeData theme, ResolvedLink link, List<Track> tracks) {
+    final cover = link.coverUrl;
+    final kind = link.kind == 'track'
+        ? 'Track'
+        : link.kind == 'album'
+            ? 'Album'
+            : 'Playlist';
+    return Row(
+      children: [
+        ClipRRect(
+          borderRadius: BorderRadius.circular(8),
+          child: SizedBox(
+            height: 56,
+            width: 56,
+            child: cover == null
+                ? _coverFallback(theme)
+                : Image.network(
+                    cover,
+                    fit: BoxFit.cover,
+                    errorBuilder: (_, _, _) => _coverFallback(theme),
+                  ),
+          ),
+        ),
+        const SizedBox(width: 12),
+        Expanded(
+          child: Column(
+            crossAxisAlignment: CrossAxisAlignment.start,
+            children: [
+              Text(
+                link.title,
+                maxLines: 2,
+                overflow: TextOverflow.ellipsis,
+                style: theme.textTheme.titleSmall,
+              ),
+              const SizedBox(height: 3),
+              Text(
+                '$kind · ${tracks.length} track${tracks.length == 1 ? '' : 's'}',
+                style: theme.textTheme.bodySmall?.copyWith(
+                  color: theme.colorScheme.onSurfaceVariant,
+                ),
+              ),
+            ],
+          ),
+        ),
+      ],
+    );
+  }
+
+  Widget _coverFallback(ThemeData theme) => Container(
+        color: theme.colorScheme.surfaceContainerHigh,
+        child: Icon(
+          Icons.music_note_rounded,
+          size: 24,
+          color: theme.colorScheme.onSurfaceVariant,
+        ),
+      );
+
+  Widget _formatRow(ThemeData theme) {
+    return InkWell(
+      onTap: _busy ? null : _pickFormat,
+      borderRadius: BorderRadius.circular(kRadius),
+      child: Padding(
+        padding: const EdgeInsets.symmetric(vertical: 12, horizontal: 4),
+        child: Row(
+          children: [
+            Text(
+              'Format',
+              style: theme.textTheme.bodySmall?.copyWith(
+                color: theme.colorScheme.onSurfaceVariant,
+              ),
+            ),
+            const SizedBox(width: 10),
+            Expanded(
+              child: Text(
+                _format.label,
+                maxLines: 1,
+                overflow: TextOverflow.ellipsis,
+                style: theme.textTheme.bodyMedium?.copyWith(
+                  fontWeight: FontWeight.w500,
+                ),
+              ),
+            ),
+            Text(
+              _format.shortSize,
+              style: theme.textTheme.bodySmall?.copyWith(
+                color: theme.colorScheme.onSurfaceVariant,
+                fontFeatures: const [FontFeature.tabularFigures()],
+              ),
+            ),
+            const SizedBox(width: 4),
+            Icon(
+              Icons.chevron_right_rounded,
+              size: 18,
+              color: theme.colorScheme.onSurfaceVariant,
+            ),
+          ],
+        ),
       ),
     );
   }
 
-  Widget _trackList(ThemeData theme, List<Track> tracks) {
-    return _Panel(
-      padding: const EdgeInsets.symmetric(vertical: 6),
-      child: Column(
-        children: [
-          for (var i = 0; i < tracks.length; i++) ...[
-            if (i > 0)
-              Divider(
-                height: 1,
-                indent: 16,
-                endIndent: 16,
-                color: theme.colorScheme.outlineVariant.withValues(alpha: 0.5),
-              ),
-            _TrackRow(
-              track: tracks[i],
-              selected: _selected.contains(tracks[i].id),
-              state: _states[tracks[i].id],
-              progress: _progress[tracks[i].id],
-              error: _trackErrors[tracks[i].id],
-              locked: _busy,
-              onToggle: (value) {
-                setState(() {
-                  if (value) {
-                    _selected.add(tracks[i].id);
-                  } else {
-                    _selected.remove(tracks[i].id);
-                  }
-                });
-              },
-            ),
-          ],
-        ],
-      ),
+  Widget _selectionRow(ThemeData theme, List<Track> tracks) {
+    return Row(
+      children: [
+        Text(
+          '${_selected.length} of ${tracks.length} selected',
+          style: theme.textTheme.bodySmall?.copyWith(
+            color: theme.colorScheme.onSurfaceVariant,
+            fontFeatures: const [FontFeature.tabularFigures()],
+          ),
+        ),
+        const Spacer(),
+        TextButton(
+          onPressed: _busy
+              ? null
+              : () => setState(() {
+                    _selected
+                      ..clear()
+                      ..addAll(tracks.map((track) => track.id));
+                  }),
+          style: TextButton.styleFrom(
+            visualDensity: VisualDensity.compact,
+            minimumSize: const Size(0, 36),
+          ),
+          child: const Text('All'),
+        ),
+        TextButton(
+          onPressed: _busy ? null : () => setState(_selected.clear),
+          style: TextButton.styleFrom(
+            visualDensity: VisualDensity.compact,
+            minimumSize: const Size(0, 36),
+          ),
+          child: const Text('None'),
+        ),
+      ],
     );
   }
 
   Widget _bottomBar(ThemeData theme) {
-    final canDownload = !_busy &&
-        !_resolving &&
-        _selected.isNotEmpty &&
-        _ready != false;
+    final canDownload =
+        !_busy && !_resolving && _selected.isNotEmpty && _ready != false;
 
-    return Container(
+    return DecoratedBox(
       decoration: BoxDecoration(
         color: theme.colorScheme.surface,
-        border: Border(
-          top: BorderSide(
-            color: theme.colorScheme.outlineVariant.withValues(alpha: 0.6),
-          ),
-        ),
+        border: Border(top: BorderSide(color: theme.colorScheme.outlineVariant)),
       ),
       child: SafeArea(
         top: false,
         child: Padding(
-          padding: const EdgeInsets.fromLTRB(20, 12, 20, 12),
-          child: Column(
-            mainAxisSize: MainAxisSize.min,
-            children: [
-              if (_busy) ...[
-                Row(
-                  children: [
-                    Text(
-                      'Downloading ${math.min(_busyDone + 1, _busyTotal)} of '
-                      '$_busyTotal',
-                      style: theme.textTheme.bodySmall,
-                    ),
-                    const Spacer(),
-                    Text(
-                      '${_busyTotal == 0 ? 0 : (_busyDone * 100 / _busyTotal).round()}%',
-                      style: theme.textTheme.bodySmall,
-                    ),
-                  ],
-                ),
-                const SizedBox(height: 8),
-                ClipRRect(
-                  borderRadius: BorderRadius.circular(8),
-                  child: LinearProgressIndicator(
-                    value: _busyTotal == 0 ? null : _busyDone / _busyTotal,
-                    minHeight: 6,
-                  ),
-                ),
-                const SizedBox(height: 12),
-                SizedBox(
+          padding: const EdgeInsets.fromLTRB(16, 12, 16, 12),
+          child: _busy
+              ? _progressBar(theme)
+              : SizedBox(
                   width: double.infinity,
-                  child: OutlinedButton.icon(
-                    onPressed: _stopRequested
-                        ? null
-                        : () => setState(() => _stopRequested = true),
-                    icon: Icon(
-                      _stopRequested
-                          ? Icons.hourglass_top_rounded
-                          : Icons.stop_rounded,
-                      size: 20,
-                    ),
-                    label: Text(
-                      _stopRequested
-                          ? 'Finishing this track…'
-                          : 'Stop after this track',
-                    ),
-                  ),
-                ),
-              ] else
-                SizedBox(
-                  width: double.infinity,
-                  height: 52,
-                  child: FilledButton.icon(
+                  height: 50,
+                  child: FilledButton(
                     onPressed: canDownload ? _downloadSelected : null,
-                    icon: const Icon(Icons.download_rounded, size: 20),
-                    label: Text(
+                    child: Text(
                       _selected.isEmpty
-                          ? 'Select tracks to download'
-                          : 'Download ${_selected.length} · ${_format.shortLabel}',
+                          ? 'Select a track to download'
+                          : 'Download ${_selected.length} · '
+                              '${_format.shortLabel}',
                     ),
                   ),
                 ),
-            ],
-          ),
         ),
       ),
     );
   }
-}
 
-class _Header extends StatelessWidget {
-  const _Header({
-    required this.ready,
-    required this.status,
-    required this.version,
-    required this.onRetry,
-  });
-
-  final bool? ready;
-  final String status;
-  final String version;
-  final VoidCallback onRetry;
-
-  @override
-  Widget build(BuildContext context) {
-    final theme = Theme.of(context);
-    final pillColor = ready == false
-        ? theme.colorScheme.errorContainer
-        : theme.colorScheme.surfaceContainerHigh;
-    final dotColor = ready == true
-        ? const Color(0xFF1DB954)
-        : ready == false
-            ? theme.colorScheme.error
-            : theme.colorScheme.tertiary;
-
-    final label = ready == true
-        ? 'On this phone · yt-dlp ${version.isEmpty ? 'ready' : version.split('.').take(3).join('.')}'
-        : status;
-
+  Widget _progressBar(ThemeData theme) {
+    final percent =
+        _busyTotal == 0 ? 0 : (_busyDone * 100 / _busyTotal).round();
+    final numberStyle = theme.textTheme.bodySmall?.copyWith(
+      fontFeatures: const [FontFeature.tabularFigures()],
+    );
     return Column(
-      crossAxisAlignment: CrossAxisAlignment.start,
+      mainAxisSize: MainAxisSize.min,
       children: [
         Row(
           children: [
-            Container(
-              height: 46,
-              width: 46,
-              decoration: BoxDecoration(
-                gradient: const LinearGradient(
-                  colors: [Color(0xFF25D366), Color(0xFF128C3E)],
-                  begin: Alignment.topLeft,
-                  end: Alignment.bottomRight,
-                ),
-                borderRadius: BorderRadius.circular(14),
-              ),
-              child: const Icon(
-                Icons.graphic_eq_rounded,
-                color: Colors.white,
-                size: 26,
-              ),
+            Text(
+              'Downloading ${math.min(_busyDone + 1, _busyTotal)} of '
+              '$_busyTotal',
+              style: numberStyle,
             ),
-            const SizedBox(width: 14),
-            Expanded(
-              child: Column(
-                crossAxisAlignment: CrossAxisAlignment.start,
-                children: [
-                  Text(
-                    'Spotify Grabber',
-                    style: theme.textTheme.titleLarge?.copyWith(
-                      fontWeight: FontWeight.w700,
-                      letterSpacing: -0.4,
-                    ),
-                  ),
-                  Text(
-                    'Songs land in your music library',
-                    style: theme.textTheme.bodySmall?.copyWith(
-                      color: theme.colorScheme.onSurfaceVariant,
-                    ),
-                  ),
-                ],
-              ),
-            ),
+            const Spacer(),
+            Text('$percent%', style: numberStyle),
           ],
         ),
-        const SizedBox(height: 14),
-        Container(
-          padding: const EdgeInsets.fromLTRB(12, 6, 6, 6),
-          decoration: BoxDecoration(
-            color: pillColor,
-            borderRadius: BorderRadius.circular(999),
+        const SizedBox(height: 8),
+        ClipRRect(
+          borderRadius: BorderRadius.circular(2),
+          child: LinearProgressIndicator(
+            value: _busyTotal == 0 ? null : _busyDone / _busyTotal,
+            minHeight: 3,
           ),
-          child: Row(
-            mainAxisSize: MainAxisSize.min,
-            children: [
-              Container(
-                height: 8,
-                width: 8,
-                decoration: BoxDecoration(
-                  color: dotColor,
-                  shape: BoxShape.circle,
-                ),
-              ),
-              const SizedBox(width: 8),
-              Flexible(
-                child: Text(
-                  label,
-                  maxLines: 1,
-                  overflow: TextOverflow.ellipsis,
-                  style: theme.textTheme.bodySmall?.copyWith(
-                    color: ready == false
-                        ? theme.colorScheme.onErrorContainer
-                        : theme.colorScheme.onSurfaceVariant,
-                  ),
-                ),
-              ),
-              if (ready == false)
-                TextButton(
-                  onPressed: onRetry,
-                  style: TextButton.styleFrom(
-                    visualDensity: VisualDensity.compact,
-                    padding: const EdgeInsets.symmetric(horizontal: 8),
-                  ),
-                  child: const Text('Retry'),
-                ),
-            ],
+        ),
+        const SizedBox(height: 12),
+        SizedBox(
+          width: double.infinity,
+          child: OutlinedButton(
+            onPressed: _stopRequested
+                ? null
+                : () => setState(() => _stopRequested = true),
+            child: Text(
+              _stopRequested
+                  ? 'Finishing this track…'
+                  : 'Stop after this track',
+            ),
           ),
         ),
       ],
@@ -681,96 +764,51 @@ class _Header extends StatelessWidget {
   }
 }
 
-class _LinkSummary extends StatelessWidget {
-  const _LinkSummary({
-    required this.link,
-    required this.selected,
-    required this.onAll,
-    required this.onNone,
+class _TopBar extends StatelessWidget {
+  const _TopBar({
+    required this.themeMode,
+    required this.onThemeMode,
+    required this.onHistory,
   });
 
-  final ResolvedLink link;
-  final int selected;
-  final VoidCallback onAll;
-  final VoidCallback onNone;
+  final ThemeMode themeMode;
+  final ValueChanged<ThemeMode>? onThemeMode;
+  final VoidCallback onHistory;
 
   @override
   Widget build(BuildContext context) {
     final theme = Theme.of(context);
-    final cover = link.coverUrl;
-    return _Panel(
-      child: Column(
+    return Padding(
+      padding: const EdgeInsets.fromLTRB(16, 6, 8, 6),
+      child: Row(
         children: [
-          Row(
-            children: [
-              ClipRRect(
-                borderRadius: BorderRadius.circular(14),
-                child: SizedBox(
-                  height: 72,
-                  width: 72,
-                  child: cover == null
-                      ? Container(
-                          color: theme.colorScheme.surfaceContainerHighest,
-                          child: const Icon(Icons.music_note_rounded),
-                        )
-                      : Image.network(
-                          cover,
-                          fit: BoxFit.cover,
-                          errorBuilder: (_, _, _) => Container(
-                            color: theme.colorScheme.surfaceContainerHighest,
-                            child: const Icon(Icons.music_note_rounded),
-                          ),
-                        ),
+          Text('Spotify Grabber', style: theme.textTheme.titleMedium),
+          const Spacer(),
+          PopupMenuButton<ThemeMode>(
+            tooltip: 'Theme',
+            icon: Icon(switch (themeMode) {
+              ThemeMode.light => Icons.light_mode_rounded,
+              ThemeMode.dark => Icons.dark_mode_rounded,
+              ThemeMode.system => Icons.brightness_auto_rounded,
+            }),
+            onSelected: onThemeMode,
+            itemBuilder: (context) => [
+              for (final (mode, label) in const [
+                (ThemeMode.system, 'System'),
+                (ThemeMode.light, 'Light'),
+                (ThemeMode.dark, 'Dark'),
+              ])
+                CheckedPopupMenuItem<ThemeMode>(
+                  value: mode,
+                  checked: themeMode == mode,
+                  child: Text(label),
                 ),
-              ),
-              const SizedBox(width: 14),
-              Expanded(
-                child: Column(
-                  crossAxisAlignment: CrossAxisAlignment.start,
-                  children: [
-                    Text(
-                      link.title,
-                      style: theme.textTheme.titleMedium?.copyWith(
-                        fontWeight: FontWeight.w600,
-                      ),
-                      maxLines: 2,
-                      overflow: TextOverflow.ellipsis,
-                    ),
-                    const SizedBox(height: 4),
-                    Text(
-                      '${link.kind} · ${link.tracks.length} '
-                      'track${link.tracks.length == 1 ? '' : 's'} · '
-                      '$selected selected',
-                      style: theme.textTheme.bodySmall?.copyWith(
-                        color: theme.colorScheme.onSurfaceVariant,
-                      ),
-                    ),
-                  ],
-                ),
-              ),
             ],
           ),
-          Align(
-            alignment: Alignment.centerRight,
-            child: Row(
-              mainAxisSize: MainAxisSize.min,
-              children: [
-                TextButton(
-                  onPressed: onAll,
-                  style: TextButton.styleFrom(
-                    visualDensity: VisualDensity.compact,
-                  ),
-                  child: const Text('Select all'),
-                ),
-                TextButton(
-                  onPressed: onNone,
-                  style: TextButton.styleFrom(
-                    visualDensity: VisualDensity.compact,
-                  ),
-                  child: const Text('None'),
-                ),
-              ],
-            ),
+          IconButton(
+            tooltip: 'Saved tracks',
+            onPressed: onHistory,
+            icon: const Icon(Icons.history_rounded),
           ),
         ],
       ),
@@ -803,16 +841,15 @@ class _TrackRow extends StatelessWidget {
     return InkWell(
       onTap: locked ? null : () => onToggle(!selected),
       child: Padding(
-        padding: const EdgeInsets.fromLTRB(6, 6, 16, 6),
+        padding: const EdgeInsets.fromLTRB(4, 10, 8, 10),
         child: Row(
+          crossAxisAlignment: CrossAxisAlignment.start,
           children: [
             Checkbox(
               value: selected,
               onChanged: locked ? null : (value) => onToggle(value ?? false),
-              shape: RoundedRectangleBorder(
-                borderRadius: BorderRadius.circular(6),
-              ),
             ),
+            const SizedBox(width: 4),
             Expanded(
               child: Column(
                 crossAxisAlignment: CrossAxisAlignment.start,
@@ -849,61 +886,37 @@ class _TrackRow extends StatelessWidget {
                 ],
               ),
             ),
-            const SizedBox(width: 10),
-            _status(context),
+            const SizedBox(width: 8),
+            SizedBox(height: 24, width: 24, child: _status(theme)),
           ],
         ),
       ),
     );
   }
 
-  Widget _status(BuildContext context) {
-    final theme = Theme.of(context);
+  Widget _status(ThemeData theme) {
     switch (state) {
       case 'done':
-        return const Icon(
-          Icons.check_circle_rounded,
-          color: Color(0xFF1DB954),
-          size: 22,
-        );
+        return const Icon(Icons.check_rounded, size: 20, color: kAccent);
       case 'failed':
-        return Tooltip(
-          message: error ?? 'Download failed',
-          triggerMode: TooltipTriggerMode.tap,
-          child: Icon(
-            Icons.error_rounded,
-            color: theme.colorScheme.error,
-            size: 22,
-          ),
+        return Icon(
+          Icons.error_outline_rounded,
+          size: 20,
+          color: theme.colorScheme.error,
         );
       case 'downloading':
-        return SizedBox(
-          height: 24,
-          width: 24,
-          child: Stack(
-            alignment: Alignment.center,
-            children: [
-              CircularProgressIndicator(
-                strokeWidth: 2.5,
-                value: progress,
-                backgroundColor:
-                    theme.colorScheme.surfaceContainerHighest,
-              ),
-            ],
-          ),
+        return Padding(
+          padding: const EdgeInsets.all(2),
+          child: CircularProgressIndicator(strokeWidth: 2, value: progress),
         );
       case 'queued':
         return Icon(
           Icons.schedule_rounded,
-          size: 20,
-          color: theme.colorScheme.onSurfaceVariant,
+          size: 18,
+          color: theme.colorScheme.outline,
         );
       default:
-        return Icon(
-          Icons.circle_outlined,
-          size: 20,
-          color: theme.colorScheme.outlineVariant,
-        );
+        return const SizedBox.shrink();
     }
   }
 }
@@ -919,20 +932,15 @@ class _FormatSheet extends StatelessWidget {
     return SafeArea(
       top: false,
       child: Padding(
-        padding: const EdgeInsets.fromLTRB(20, 0, 20, 16),
+        padding: const EdgeInsets.fromLTRB(16, 0, 16, 16),
         child: Column(
           mainAxisSize: MainAxisSize.min,
           crossAxisAlignment: CrossAxisAlignment.start,
           children: [
+            Text('Audio format', style: theme.textTheme.titleMedium),
+            const SizedBox(height: 2),
             Text(
-              'Audio format',
-              style: theme.textTheme.titleLarge?.copyWith(
-                fontWeight: FontWeight.w700,
-              ),
-            ),
-            const SizedBox(height: 4),
-            Text(
-              'Picked once, remembered for next time.',
+              'Remembered for next time.',
               style: theme.textTheme.bodySmall?.copyWith(
                 color: theme.colorScheme.onSurfaceVariant,
               ),
@@ -965,272 +973,124 @@ class _FormatOption extends StatelessWidget {
   @override
   Widget build(BuildContext context) {
     final theme = Theme.of(context);
-    return Padding(
-      padding: const EdgeInsets.only(bottom: 10),
-      child: Material(
-        color: selected
-            ? theme.colorScheme.secondaryContainer
-            : theme.colorScheme.surfaceContainerLow,
-        borderRadius: BorderRadius.circular(18),
-        child: InkWell(
-          onTap: onTap,
-          borderRadius: BorderRadius.circular(18),
-          child: Padding(
-            padding: const EdgeInsets.fromLTRB(14, 14, 16, 14),
-            child: Row(
-              crossAxisAlignment: CrossAxisAlignment.start,
-              children: [
-                Container(
-                  height: 40,
-                  width: 40,
-                  decoration: BoxDecoration(
-                    color: selected
-                        ? theme.colorScheme.surface
-                        : theme.colorScheme.surfaceContainerHighest,
-                    borderRadius: BorderRadius.circular(12),
-                  ),
-                  child: Icon(format.icon, size: 21),
-                ),
-                const SizedBox(width: 14),
-                Expanded(
-                  child: Column(
-                    crossAxisAlignment: CrossAxisAlignment.start,
-                    children: [
-                      Row(
-                        children: [
-                          Flexible(
-                            child: Text(
-                              format.label,
-                              style: theme.textTheme.titleSmall?.copyWith(
-                                fontWeight: FontWeight.w600,
-                              ),
-                            ),
-                          ),
-                          if (format.recommended) ...[
-                            const SizedBox(width: 8),
-                            Container(
-                              padding: const EdgeInsets.symmetric(
-                                horizontal: 8,
-                                vertical: 2,
-                              ),
-                              decoration: BoxDecoration(
-                                color: theme.colorScheme.primaryContainer,
-                                borderRadius: BorderRadius.circular(999),
-                              ),
-                              child: Text(
-                                'Default',
-                                style: theme.textTheme.labelSmall?.copyWith(
-                                  color:
-                                      theme.colorScheme.onPrimaryContainer,
-                                ),
-                              ),
-                            ),
-                          ],
-                        ],
-                      ),
-                      const SizedBox(height: 4),
-                      Text(
-                        format.tagline,
-                        style: theme.textTheme.bodySmall?.copyWith(
-                          color: theme.colorScheme.onSurfaceVariant,
-                          height: 1.35,
-                        ),
-                      ),
-                      const SizedBox(height: 6),
-                      Text(
-                        format.size,
-                        style: theme.textTheme.labelSmall?.copyWith(
-                          color: theme.colorScheme.onSurfaceVariant,
-                        ),
-                      ),
-                    ],
-                  ),
-                ),
-                const SizedBox(width: 8),
-                Icon(
-                  selected
-                      ? Icons.check_circle_rounded
-                      : Icons.circle_outlined,
-                  color: selected
-                      ? theme.colorScheme.primary
-                      : theme.colorScheme.outlineVariant,
-                  size: 22,
-                ),
-              ],
-            ),
-          ),
+    return InkWell(
+      onTap: onTap,
+      borderRadius: BorderRadius.circular(kRadius),
+      child: Container(
+        padding: const EdgeInsets.symmetric(vertical: 12, horizontal: 10),
+        decoration: BoxDecoration(
+          color: selected ? theme.colorScheme.surfaceContainerHigh : null,
+          borderRadius: BorderRadius.circular(kRadius),
         ),
-      ),
-    );
-  }
-}
-
-class _HowItWorks extends StatelessWidget {
-  const _HowItWorks();
-
-  @override
-  Widget build(BuildContext context) {
-    final theme = Theme.of(context);
-    const steps = <(IconData, String, String)>[
-      (
-        Icons.copy_rounded,
-        'Copy a link in Spotify',
-        'Tap ••• → Share → Copy link on any song, album or playlist.',
-      ),
-      (
-        Icons.tune_rounded,
-        'Pick a format',
-        'M4A by default; MP3, Opus or FLAC if you prefer.',
-      ),
-      (
-        Icons.phone_android_rounded,
-        'Download on the phone',
-        'Files are saved to Music/SpotifyGrabber — no PC involved.',
-      ),
-    ];
-
-    return _Panel(
-      child: Column(
-        crossAxisAlignment: CrossAxisAlignment.start,
-        children: [
-          Text(
-            'How it works',
-            style: theme.textTheme.titleSmall?.copyWith(
-              fontWeight: FontWeight.w600,
+        child: Row(
+          crossAxisAlignment: CrossAxisAlignment.start,
+          children: [
+            SizedBox(
+              height: 22,
+              width: 22,
+              child: selected
+                  ? const Icon(Icons.check_circle_rounded,
+                      size: 20, color: kAccent)
+                  : Icon(
+                      Icons.circle_outlined,
+                      size: 20,
+                      color: theme.colorScheme.outlineVariant,
+                    ),
             ),
-          ),
-          const SizedBox(height: 12),
-          for (final (icon, title, body) in steps)
-            Padding(
-              padding: const EdgeInsets.only(bottom: 14),
-              child: Row(
+            const SizedBox(width: 10),
+            Expanded(
+              child: Column(
                 crossAxisAlignment: CrossAxisAlignment.start,
                 children: [
-                  Icon(icon, size: 20, color: theme.colorScheme.primary),
-                  const SizedBox(width: 12),
-                  Expanded(
-                    child: Column(
-                      crossAxisAlignment: CrossAxisAlignment.start,
-                      children: [
-                        Text(title, style: theme.textTheme.bodyMedium),
+                  Row(
+                    children: [
+                      Flexible(
+                        child: Text(format.label,
+                            style: theme.textTheme.titleSmall),
+                      ),
+                      if (format.recommended) ...[
+                        const SizedBox(width: 8),
                         Text(
-                          body,
-                          style: theme.textTheme.bodySmall?.copyWith(
+                          'default',
+                          style: theme.textTheme.labelSmall?.copyWith(
                             color: theme.colorScheme.onSurfaceVariant,
-                            height: 1.35,
                           ),
                         ),
                       ],
+                    ],
+                  ),
+                  const SizedBox(height: 2),
+                  Text(
+                    format.tagline,
+                    style: theme.textTheme.bodySmall?.copyWith(
+                      color: theme.colorScheme.onSurfaceVariant,
+                    ),
+                  ),
+                  const SizedBox(height: 4),
+                  Text(
+                    format.size,
+                    style: theme.textTheme.bodySmall?.copyWith(
+                      color: theme.colorScheme.onSurfaceVariant,
                     ),
                   ),
                 ],
               ),
             ),
-          Text(
-            'Audio comes from YouTube, so a track has to exist there. Spotify '
-            'metadata stays exact; artist and title tags are written into the file.',
-            style: theme.textTheme.bodySmall?.copyWith(
-              color: theme.colorScheme.onSurfaceVariant,
-              height: 1.35,
-            ),
-          ),
-        ],
-      ),
-    );
-  }
-}
-
-class _Panel extends StatelessWidget {
-  const _Panel({required this.child, this.padding});
-
-  final Widget child;
-  final EdgeInsetsGeometry? padding;
-
-  @override
-  Widget build(BuildContext context) {
-    final theme = Theme.of(context);
-    return Container(
-      padding: padding,
-      decoration: BoxDecoration(
-        color: theme.colorScheme.surfaceContainerLow,
-        borderRadius: BorderRadius.circular(20),
-        border: Border.all(
-          color: theme.colorScheme.outlineVariant.withValues(alpha: 0.5),
+          ],
         ),
       ),
-      child: child,
     );
   }
 }
 
-class _ErrorBanner extends StatelessWidget {
-  const _ErrorBanner({required this.message});
+enum _NoticeTone { neutral, error }
 
+class _Notice extends StatelessWidget {
+  const _Notice({
+    required this.icon,
+    required this.message,
+    this.tone = _NoticeTone.neutral,
+    this.action,
+  });
+
+  final IconData icon;
   final String message;
+  final _NoticeTone tone;
+  final Widget? action;
 
   @override
   Widget build(BuildContext context) {
     final theme = Theme.of(context);
+    final error = tone == _NoticeTone.error;
+    final background =
+        error ? theme.colorScheme.errorContainer : theme.colorScheme.surfaceContainerLow;
+    final foreground =
+        error ? theme.colorScheme.onErrorContainer : theme.colorScheme.onSurface;
     return Container(
-      padding: const EdgeInsets.all(14),
+      padding: const EdgeInsets.fromLTRB(12, 10, 8, 10),
       decoration: BoxDecoration(
-        color: theme.colorScheme.errorContainer,
-        borderRadius: BorderRadius.circular(16),
+        color: background,
+        borderRadius: BorderRadius.circular(kRadius),
+        border: error
+            ? null
+            : Border.all(color: theme.colorScheme.outlineVariant),
       ),
       child: Row(
-        crossAxisAlignment: CrossAxisAlignment.start,
+        crossAxisAlignment: CrossAxisAlignment.center,
         children: [
           Icon(
-            Icons.error_outline_rounded,
-            size: 20,
-            color: theme.colorScheme.onErrorContainer,
+            icon,
+            size: 18,
+            color: error ? theme.colorScheme.onErrorContainer : foreground,
           ),
           const SizedBox(width: 10),
           Expanded(
             child: Text(
               message,
-              style: theme.textTheme.bodyMedium?.copyWith(
-                color: theme.colorScheme.onErrorContainer,
-              ),
+              style: theme.textTheme.bodySmall?.copyWith(color: foreground),
             ),
           ),
-        ],
-      ),
-    );
-  }
-}
-
-class _SavedBanner extends StatelessWidget {
-  const _SavedBanner({required this.message});
-
-  final String message;
-
-  @override
-  Widget build(BuildContext context) {
-    final theme = Theme.of(context);
-    return Container(
-      padding: const EdgeInsets.all(14),
-      decoration: BoxDecoration(
-        color: theme.colorScheme.secondaryContainer,
-        borderRadius: BorderRadius.circular(16),
-      ),
-      child: Row(
-        crossAxisAlignment: CrossAxisAlignment.start,
-        children: [
-          Icon(
-            Icons.library_music_rounded,
-            size: 20,
-            color: theme.colorScheme.onSecondaryContainer,
-          ),
-          const SizedBox(width: 10),
-          Expanded(
-            child: Text(
-              message,
-              style: theme.textTheme.bodyMedium?.copyWith(
-                color: theme.colorScheme.onSecondaryContainer,
-              ),
-            ),
-          ),
+          ?action,
         ],
       ),
     );
