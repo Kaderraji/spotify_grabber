@@ -28,3 +28,8 @@ dist/
 # Local leftovers
 *.log
 .DS_Store
+
+
+.claude/
+.agents/
+skills-lock.json

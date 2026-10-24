@@ -48,6 +48,25 @@ class DeviceDownloader {
     }
   }
 
+  /// Holds the phone awake for a queue of [total] tracks, so the screen can go
+  /// off or the app can be backgrounded while they download.
+  Future<void> startQueue(int total) async {
+    try {
+      await _channel.invokeMethod<void>('startQueue', {'total': total});
+    } on PlatformException {
+      // Losing the wake lock is not worth failing the downloads over.
+    }
+  }
+
+  /// Ends the queue; [saved] tracks are reported in the final notification.
+  Future<void> stopQueue(int saved) async {
+    try {
+      await _channel.invokeMethod<void>('stopQueue', {'saved': saved});
+    } on PlatformException {
+      // The service stops itself if it was never started.
+    }
+  }
+
   /// Searches YouTube for [query] and saves the best match to the phone.
   Future<({String path, int size})> download({
     required String id,
@@ -57,6 +76,8 @@ class DeviceDownloader {
     required int duration,
     required String name,
     required AudioFormat format,
+    required int position,
+    required int total,
   }) async {
     try {
       final result =
@@ -68,6 +89,8 @@ class DeviceDownloader {
         'duration': duration,
         'name': name,
         'format': format.id,
+        'position': position,
+        'total': total,
       });
       if (result == null) {
         throw DeviceDownloadException('The downloader returned nothing.');

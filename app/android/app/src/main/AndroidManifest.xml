@@ -1,6 +1,13 @@
 <manifest xmlns:android="http://schemas.android.com/apk/res/android">
     <!-- The app talks to the downloader on the local network over plain HTTP. -->
     <uses-permission android:name="android.permission.INTERNET"/>
+    <!-- A running queue is kept alive by a foreground service with a wake lock,
+         so tracks keep downloading with the screen off or the app in the
+         background. -->
+    <uses-permission android:name="android.permission.FOREGROUND_SERVICE"/>
+    <uses-permission android:name="android.permission.FOREGROUND_SERVICE_DATA_SYNC"/>
+    <uses-permission android:name="android.permission.WAKE_LOCK"/>
+    <uses-permission android:name="android.permission.POST_NOTIFICATIONS"/>
     <application
         android:label="Spotify Grabber"
         android:name="${applicationName}"
@@ -35,6 +42,11 @@
                 <data android:mimeType="text/plain"/>
             </intent-filter>
         </activity>
+        <service
+            android:name=".DownloadService"
+            android:exported="false"
+            android:foregroundServiceType="dataSync"
+            android:stopWithTask="true"/>
         <!-- Don't delete the meta-data below.
              This is used by the Flutter tool to generate GeneratedPluginRegistrant.java -->
         <meta-data

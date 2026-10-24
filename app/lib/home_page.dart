@@ -223,34 +223,43 @@ class _HomePageState extends State<HomePage> {
     });
 
     var saved = 0;
-    for (final track in tracks) {
-      if (_stopRequested) break;
-      setState(() {
-        _states[track.id] = 'downloading';
-        _progress.remove(track.id);
-      });
-      try {
-        await _downloader.download(
-          id: track.id,
-          query: '${track.artists} - ${track.title}',
-          title: track.title,
-          artist: track.artists,
-          duration: track.duration,
-          name: _fileBaseName(track),
-          format: _format,
-        );
-        saved++;
-        if (!mounted) return;
-        setState(() => _states[track.id] = 'done');
-      } catch (error) {
-        if (!mounted) return;
+    // Holds the phone awake for the whole queue, so the screen going off or
+    // the app moving to the background does not pause it.
+    await _downloader.startQueue(tracks.length);
+    try {
+      for (final track in tracks) {
+        if (_stopRequested) break;
         setState(() {
-          _states[track.id] = 'failed';
-          _trackErrors[track.id] = error.toString();
+          _states[track.id] = 'downloading';
+          _progress.remove(track.id);
         });
+        try {
+          await _downloader.download(
+            id: track.id,
+            query: '${track.artists} - ${track.title}',
+            title: track.title,
+            artist: track.artists,
+            duration: track.duration,
+            name: _fileBaseName(track),
+            format: _format,
+            position: _busyDone + 1,
+            total: tracks.length,
+          );
+          saved++;
+          if (!mounted) return;
+          setState(() => _states[track.id] = 'done');
+        } catch (error) {
+          if (!mounted) return;
+          setState(() {
+            _states[track.id] = 'failed';
+            _trackErrors[track.id] = error.toString();
+          });
+        }
+        if (!mounted) return;
+        setState(() => _busyDone++);
       }
-      if (!mounted) return;
-      setState(() => _busyDone++);
+    } finally {
+      await _downloader.stopQueue(saved);
     }
 
     if (!mounted) return;

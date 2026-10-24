@@ -84,6 +84,11 @@ unlocked (and "Install via USB" enabled in Developer options).
 3. Pick a **format** (see below). The choice is remembered.
 4. **Download** — tracks are downloaded one after another with a live
    percentage. `Stop after this track` ends the queue after the current file.
+   The queue keeps running with the screen off or the app in the background: a
+   foreground service holds a wake lock and shows the current track in a
+   notification, so Android does not freeze the app or let the CPU sleep
+   mid-track. When the queue ends it leaves a "Saved N tracks" notification;
+   swiping the app out of recents stops everything.
 5. Files land in `Music/SpotifyGrabber/<artist> - <title>.<ext>`, indexed by the
    system so any music player sees them. Re-downloading a song replaces the old
    file — including when the format changed — instead of adding a second copy.

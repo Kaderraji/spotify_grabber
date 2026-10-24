@@ -1,6 +1,9 @@
 package com.spotifygrabber.spotify_grabber
 
+import android.Manifest
 import android.content.Intent
+import android.content.pm.PackageManager
+import android.os.Build
 import android.os.Handler
 import android.os.Looper
 import io.flutter.embedding.android.FlutterActivity
@@ -16,6 +19,7 @@ class MainActivity : FlutterActivity() {
     private var progressSink: EventChannel.EventSink? = null
     private var shareChannel: MethodChannel? = null
     private var pendingLink: String? = null
+    private var notifiedPercent = -1
     private lateinit var downloader: OnDeviceDownloader
     private val prefs by lazy { getSharedPreferences("grabber", MODE_PRIVATE) }
 
@@ -92,6 +96,11 @@ class MainActivity : FlutterActivity() {
                     val id: String = call.argument<String>("id") ?: name
                     val duration: Int = call.argument<Int>("duration") ?: 0
                     val format: String = call.argument<String>("format") ?: "m4a"
+                    val position: Int = call.argument<Int>("position") ?: 1
+                    val total: Int = call.argument<Int>("total") ?: 1
+                    val label = listOf(artist, title).filter { it.isNotBlank() }.joinToString(" - ")
+                    notifiedPercent = -1
+                    DownloadService.update(applicationContext, position, total, label, 0)
                     worker.execute {
                         try {
                             val file = downloader.download(
@@ -102,6 +111,19 @@ class MainActivity : FlutterActivity() {
                                 artist = artist,
                                 format = format,
                             ) { progress ->
+                                // The notification does not need every percent,
+                                // and each update is a service call.
+                                val percent = (progress * 100).toInt()
+                                if (percent >= notifiedPercent + 5) {
+                                    notifiedPercent = percent
+                                    DownloadService.update(
+                                        applicationContext,
+                                        position,
+                                        total,
+                                        label,
+                                        percent,
+                                    )
+                                }
                                 main.post {
                                     progressSink?.success(
                                         mapOf("id" to id, "progress" to progress),
@@ -119,6 +141,19 @@ class MainActivity : FlutterActivity() {
                     }
                 }
 
+                // A queue holds the phone awake through DownloadService, so the
+                // screen can go off or the app can be backgrounded mid-download.
+                "startQueue" -> {
+                    askForNotifications()
+                    DownloadService.begin(applicationContext, call.argument<Int>("total") ?: 0)
+                    result.success(null)
+                }
+
+                "stopQueue" -> {
+                    DownloadService.end(applicationContext, call.argument<Int>("saved") ?: 0)
+                    result.success(null)
+                }
+
                 "getFormat" -> result.success(prefs.getString("format", "m4a"))
 
                 "setFormat" -> {
@@ -129,6 +164,16 @@ class MainActivity : FlutterActivity() {
 
                 else -> result.notImplemented()
             }
+        }
+    }
+
+    /** Android 13+ hides the download notification without this permission. */
+    private fun askForNotifications() {
+        if (Build.VERSION.SDK_INT < Build.VERSION_CODES.TIRAMISU) return
+        val granted = checkSelfPermission(Manifest.permission.POST_NOTIFICATIONS) ==
+            PackageManager.PERMISSION_GRANTED
+        if (!granted) {
+            requestPermissions(arrayOf(Manifest.permission.POST_NOTIFICATIONS), 7301)
         }
     }
 
