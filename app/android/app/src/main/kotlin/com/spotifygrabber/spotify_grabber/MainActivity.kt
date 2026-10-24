@@ -14,6 +14,7 @@ class MainActivity : FlutterActivity() {
     private val main = Handler(Looper.getMainLooper())
     private var progressSink: EventChannel.EventSink? = null
     private lateinit var downloader: OnDeviceDownloader
+    private val prefs by lazy { getSharedPreferences("grabber", MODE_PRIVATE) }
 
     override fun configureFlutterEngine(flutterEngine: FlutterEngine) {
         super.configureFlutterEngine(flutterEngine)
@@ -53,14 +54,15 @@ class MainActivity : FlutterActivity() {
                 "download" -> {
                     val query = call.argument<String>("query")
                     val name = call.argument<String>("name")
-                    val title = call.argument<String>("title") ?: name
-                    val artist = call.argument<String>("artist") ?: ""
-                    val id = call.argument<String>("id") ?: name
-                    val duration = call.argument<Int>("duration") ?: 0
                     if (query == null || name == null) {
                         result.error("bad_args", "query and name are required", null)
                         return@setMethodCallHandler
                     }
+                    val title: String = call.argument<String>("title") ?: name
+                    val artist: String = call.argument<String>("artist") ?: ""
+                    val id: String = call.argument<String>("id") ?: name
+                    val duration: Int = call.argument<Int>("duration") ?: 0
+                    val format: String = call.argument<String>("format") ?: "m4a"
                     worker.execute {
                         try {
                             val file = downloader.download(
@@ -69,6 +71,7 @@ class MainActivity : FlutterActivity() {
                                 baseName = name,
                                 title = title,
                                 artist = artist,
+                                format = format,
                             ) { progress ->
                                 main.post {
                                     progressSink?.success(
@@ -85,6 +88,14 @@ class MainActivity : FlutterActivity() {
                             main.post { result.error("download_failed", error.message, null) }
                         }
                     }
+                }
+
+                "getFormat" -> result.success(prefs.getString("format", "m4a"))
+
+                "setFormat" -> {
+                    val format = call.argument<String>("format") ?: "m4a"
+                    prefs.edit().putString("format", format).apply()
+                    result.success(null)
                 }
 
                 else -> result.notImplemented()

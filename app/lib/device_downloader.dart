@@ -1,5 +1,7 @@
 import 'package:flutter/services.dart';
 
+import 'audio_format.dart';
+
 class DeviceDownloadException implements Exception {
   DeviceDownloadException(this.message);
   final String message;
@@ -29,6 +31,23 @@ class DeviceDownloader {
       .receiveBroadcastStream()
       .map((event) => Map<String, dynamic>.from(event as Map));
 
+  Future<AudioFormat> savedFormat() async {
+    try {
+      final id = await _channel.invokeMethod<String>('getFormat');
+      return AudioFormat.byId(id);
+    } on PlatformException {
+      return AudioFormat.all.first;
+    }
+  }
+
+  Future<void> rememberFormat(AudioFormat format) async {
+    try {
+      await _channel.invokeMethod<void>('setFormat', {'format': format.id});
+    } on PlatformException {
+      // Only a preference: losing it is not worth interrupting a download.
+    }
+  }
+
   /// Searches YouTube for [query] and saves the best match to the phone.
   Future<({String path, int size})> download({
     required String id,
@@ -37,6 +56,7 @@ class DeviceDownloader {
     required String artist,
     required int duration,
     required String name,
+    required AudioFormat format,
   }) async {
     try {
       final result =
@@ -47,6 +67,7 @@ class DeviceDownloader {
         'artist': artist,
         'duration': duration,
         'name': name,
+        'format': format.id,
       });
       if (result == null) {
         throw DeviceDownloadException('The downloader returned nothing.');

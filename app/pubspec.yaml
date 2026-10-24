@@ -35,15 +35,6 @@ dependencies:
   # Use with the CupertinoIcons class for iOS style icons.
   cupertino_icons: ^1.0.8
   http: ^1.6.0
-  shared_preferences: ^2.5.6
-  path_provider: ^2.1.6
-
-# The JNI-based releases of these plugins need the Android NDK (~2.5 GB) to
-# build, which this machine's disk cannot take. The last platform-channel
-# releases work the same and need no NDK.
-dependency_overrides:
-  path_provider_android: 2.2.23
-  shared_preferences_android: 2.4.28
 
 dev_dependencies:
   flutter_test:

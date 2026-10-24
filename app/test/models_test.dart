@@ -1,5 +1,5 @@
 import 'package:flutter_test/flutter_test.dart';
-import 'package:spotify_grabber/api.dart';
+import 'package:spotify_grabber/models.dart';
 
 void main() {
   test('parses a resolved playlist', () {
@@ -8,52 +8,38 @@ void main() {
       'kind': 'playlist',
       'title': 'Late Night',
       'cover_url': 'https://example.com/cover.jpg',
-      'total': 2,
       'tracks': [
-        {
-          'id': 't1',
-          'title': 'One',
-          'artists': 'A',
-          'duration': 181,
-          'state': 'queued',
-        },
+        {'id': 't1', 'title': 'One', 'artists': 'A', 'duration': 181},
         {
           'id': 't2',
           'title': 'Two',
           'artists': 'B, C',
+          'album': 'Album',
           'duration': 95,
-          'state': 'present',
-          'file': 'B, C - Two.m4a',
-          'size': 1024,
         },
       ],
     });
 
     expect(link.title, 'Late Night');
+    expect(link.kind, 'playlist');
+    expect(link.coverUrl, 'https://example.com/cover.jpg');
     expect(link.tracks, hasLength(2));
-    expect(link.alreadyDownloaded, 1);
-    expect(link.tracks[1].isDownloaded, isTrue);
-    expect(link.tracks[0].isDownloaded, isFalse);
+    expect(link.tracks.first.displayName, 'A - One');
+    expect(link.tracks[1].album, 'Album');
   });
 
-  test('parses job progress and exposes finished files', () {
-    final job = JobInfo.fromJson({
-      'id': 'job1',
-      'title': 'Late Night',
-      'status': 'done',
-      'counts': {'total': 3, 'done': 2, 'failed': 1, 'pending': 0},
+  test('parses a single track and tolerates missing fields', () {
+    final link = ResolvedLink.fromJson({
+      'kind': 'track',
       'tracks': [
-        {'id': 'a', 'title': 'A', 'artists': 'X', 'duration': 60, 'state': 'done', 'file': 'X - A.m4a'},
-        {'id': 'b', 'title': 'B', 'artists': 'Y', 'duration': 61, 'state': 'failed', 'error': 'no match'},
-        {'id': 'c', 'title': 'C', 'artists': 'Z', 'duration': 62, 'state': 'present', 'file': 'Z - C.m4a'},
+        {'id': 'one'},
       ],
     });
 
-    expect(job.isFinished, isTrue);
-    expect(job.done, 2);
-    expect(job.failed, 1);
-    expect(job.ready.map((t) => t.id), ['a', 'c']);
-    expect(job.tracks[1].isFailed, isTrue);
+    expect(link.title, 'Untitled');
+    expect(link.coverUrl, isNull);
+    expect(link.tracks.single.title, '');
+    expect(link.tracks.single.duration, 0);
   });
 
   test('formats durations', () {

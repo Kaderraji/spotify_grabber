@@ -45,9 +45,10 @@ class OnDeviceDownloader(private val context: Context) {
     }
 
     /**
-     * Searches YouTube for [query] and saves the best audio match as m4a in the
-     * phone's music library. When [durationSec] is known the result is filtered
-     * to a close duration, which drops sped-up/slowed/cover versions.
+     * Searches YouTube for [query] and saves the best audio match in the chosen
+     * [format] into the phone's music library. When [durationSec] is known the
+     * result is filtered to a close duration, which drops sped-up/slowed/cover
+     * versions.
      */
     fun download(
         query: String,
@@ -55,9 +56,11 @@ class OnDeviceDownloader(private val context: Context) {
         baseName: String,
         title: String,
         artist: String,
+        format: String,
         onProgress: (Float) -> Unit,
     ): SavedFile {
         initEngines()
+        val spec = AudioSpec.of(format)
 
         val workDir = File(context.cacheDir, "downloads").apply { mkdirs() }
         workDir.listFiles { file -> file.name.startsWith(baseName) }?.forEach { it.delete() }
@@ -65,10 +68,19 @@ class OnDeviceDownloader(private val context: Context) {
         fun run(filtered: Boolean): YoutubeDLResponse {
             val request = YoutubeDLRequest("ytsearch1:$query")
             request.addOption("-x")
-            request.addOption("--audio-format", "m4a")
-            request.addOption("--audio-quality", "0")
+            request.addOption("--audio-format", spec.container)
+            request.addOption("--audio-quality", spec.quality)
             request.addOption("--no-playlist")
             request.addOption("--embed-metadata")
+            // YouTube's own title reads "(Official Video) (4K Remaster)" and
+            // its channel name is not always the artist. Overwrite both with
+            // the Spotify values before the tags are written.
+            request.addCommands(
+                listOf(
+                    "--replace-in-metadata", "title", "^.*", literal(title),
+                    "--replace-in-metadata", "artist", "^.*", literal(artist),
+                ),
+            )
             request.addOption("--embed-thumbnail")
             request.addOption("--convert-thumbnails", "jpg")
             request.addOption("-o", File(workDir, "$baseName.%(ext)s").absolutePath)
@@ -102,11 +114,20 @@ class OnDeviceDownloader(private val context: Context) {
             ?.maxByOrNull { it.length() }
             ?: throw IllegalStateException("No audio found for \"$query\".")
 
-        val name = "$baseName.m4a"
-        val saved = publish(produced, name, title, artist)
+        val extension = produced.extension.ifEmpty { spec.container }
+        val saved = publish(
+            source = produced,
+            name = "$baseName.$extension",
+            title = title,
+            artist = artist,
+            mimeType = spec.mimeType(extension),
+        )
         produced.delete()
         return saved
     }
+
+    /** yt-dlp reads the replacement as a regex template; a stray backslash throws. */
+    private fun literal(value: String) = value.replace("\\", "\\\\")
 
     private fun initEngines() {
         if (initialized) return
@@ -116,24 +137,23 @@ class OnDeviceDownloader(private val context: Context) {
     }
 
     /** Copies the finished track into Music/SpotifyGrabber so players see it. */
-    private fun publish(source: File, name: String, title: String, artist: String): SavedFile {
+    private fun publish(
+        source: File,
+        name: String,
+        title: String,
+        artist: String,
+        mimeType: String,
+    ): SavedFile {
         if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q) {
             val resolver = context.contentResolver
             val relative = "${Environment.DIRECTORY_MUSIC}/$FOLDER"
             val collection = MediaStore.Audio.Media.EXTERNAL_CONTENT_URI
-            // Replace an earlier download of the same song instead of adding a copy.
-            runCatching {
-                resolver.delete(
-                    collection,
-                    "${MediaStore.Audio.Media.DISPLAY_NAME} = ? AND " +
-                        "${MediaStore.Audio.Media.RELATIVE_PATH} = ?",
-                    arrayOf(name, "$relative/"),
-                )
-            }
+            // Drop an earlier download of the same song, whatever its format.
+            removePrevious(relative, name.substringBeforeLast('.'))
 
             val values = ContentValues().apply {
                 put(MediaStore.Audio.Media.DISPLAY_NAME, name)
-                put(MediaStore.Audio.Media.MIME_TYPE, "audio/mp4")
+                put(MediaStore.Audio.Media.MIME_TYPE, mimeType)
                 put(MediaStore.Audio.Media.RELATIVE_PATH, relative)
                 put(MediaStore.Audio.Media.IS_MUSIC, 1)
                 put(MediaStore.Audio.Media.TITLE, title)
@@ -170,6 +190,38 @@ class OnDeviceDownloader(private val context: Context) {
         return SavedFile(target.absolutePath, target.length())
     }
 
+    /** Deletes previous copies of this song (any audio extension) on Android 10+. */
+    private fun removePrevious(relativePath: String, stem: String) {
+        val resolver = context.contentResolver
+        val collection = MediaStore.Audio.Media.EXTERNAL_CONTENT_URI
+        val pattern = stem
+            .replace("\\", "\\\\")
+            .replace("%", "\\%")
+            .replace("_", "\\_") + ".%"
+        val ids = mutableListOf<Long>()
+        runCatching {
+            resolver.query(
+                collection,
+                arrayOf(MediaStore.Audio.Media._ID),
+                "${MediaStore.Audio.Media.RELATIVE_PATH} = ? AND " +
+                    "${MediaStore.Audio.Media.DISPLAY_NAME} LIKE ? ESCAPE '\\'",
+                arrayOf("$relativePath/", pattern),
+                null,
+            )?.use { cursor ->
+                while (cursor.moveToNext()) ids.add(cursor.getLong(0))
+            }
+        }
+        for (id in ids) {
+            runCatching {
+                resolver.delete(
+                    collection,
+                    "${MediaStore.Audio.Media._ID} = ?",
+                    arrayOf(id.toString()),
+                )
+            }
+        }
+    }
+
     private fun isStale(version: String?): Boolean {
         if (version.isNullOrBlank()) return true
         return try {
@@ -181,6 +233,40 @@ class OnDeviceDownloader(private val context: Context) {
     }
 
     data class SavedFile(val path: String, val size: Long)
+
+    /**
+     * One output format. [container] is passed to yt-dlp, [quality] to its
+     * audio encoder ("0" = best for the codec).
+     */
+    private data class AudioSpec(
+        val container: String,
+        val quality: String,
+        val mime: String,
+    ) {
+        fun mimeType(extension: String): String = when (extension) {
+            "m4a", "aac", "mp4" -> "audio/mp4"
+            "mp3" -> "audio/mpeg"
+            "opus" -> "audio/opus"
+            "ogg", "oga" -> "audio/ogg"
+            "flac" -> "audio/flac"
+            "wav" -> "audio/wav"
+            else -> mime
+        }
+
+        companion object {
+            private val M4A = AudioSpec("m4a", "0", "audio/mp4")
+            private val MP3 = AudioSpec("mp3", "192K", "audio/mpeg")
+            private val OPUS = AudioSpec("opus", "0", "audio/opus")
+            private val FLAC = AudioSpec("flac", "0", "audio/flac")
+
+            fun of(id: String): AudioSpec = when (id) {
+                "mp3" -> MP3
+                "opus" -> OPUS
+                "flac" -> FLAC
+                else -> M4A
+            }
+        }
+    }
 
     private companion object {
         const val TAG = "GRABBER_DEVICE"
