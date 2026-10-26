@@ -180,9 +180,13 @@ class MainActivity : FlutterActivity() {
                 // A queue holds the phone awake through DownloadService, so the
                 // screen can go off or the app can be backgrounded mid-download.
                 "startQueue" -> {
-                    askForNotifications()
+                    // false when Android 12+ refuses a background start; the
+                    // app then waits until it is on screen again.
                     DownloadService.begin(applicationContext, call.argument<Int>("total") ?: 0)
-                    result.success(null)
+                        .let { started ->
+                            if (started) askForNotifications()
+                            result.success(started)
+                        }
                 }
 
                 "stopQueue" -> {

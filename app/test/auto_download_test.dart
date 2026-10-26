@@ -13,6 +13,9 @@ void main() {
   final prefs = <String, String>{};
   final deviceCalls = <String>[];
 
+  /// Android 12+ refuses a foreground service started from the background.
+  var serviceAllowed = true;
+
   const link = 'https://open.spotify.com/track/4cOdK2wGLETKBW3PvgPWqT';
 
   Future<ResolvedLink> fakeResolve(String url) async => ResolvedLink(
@@ -32,14 +35,19 @@ void main() {
   setUp(() {
     prefs.clear();
     deviceCalls.clear();
+    serviceAllowed = true;
     messenger
       ..setMockMethodCallHandler(
         const MethodChannel('grabber/on_device'),
         (call) async {
           deviceCalls.add(call.method);
+          if (call.method == 'startQueue' && !serviceAllowed) {
+            throw PlatformException(code: 'foreground_service_blocked');
+          }
           return switch (call.method) {
             'prepare' => 'test-engine',
             'getFormat' => 'm4a',
+            'startQueue' => true,
             'download' => {'path': 'Music/SpotifyGrabber/song.m4a', 'size': 3072},
             _ => null,
           };
@@ -112,5 +120,26 @@ void main() {
 
     expect(deviceCalls, contains('download'));
     expect(prefs['history'], contains('Never Gonna Give You Up'));
+  });
+
+  testWidgets('a queue refused in the background waits for the app',
+      (tester) async {
+    prefs['auto_download'] = '1';
+    serviceAllowed = false;
+
+    await pumpHome(tester);
+
+    expect(deviceCalls, isNot(contains('download')));
+    expect(
+      find.textContaining('back on screen'),
+      findsOneWidget,
+    );
+
+    serviceAllowed = true;
+    tester.binding.handleAppLifecycleStateChanged(AppLifecycleState.resumed);
+    await tester.pumpAndSettle();
+
+    expect(deviceCalls, contains('download'));
+    expect(find.textContaining('back on screen'), findsNothing);
   });
 }

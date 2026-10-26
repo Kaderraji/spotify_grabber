@@ -31,7 +31,7 @@ class HomePage extends StatefulWidget {
   State<HomePage> createState() => _HomePageState();
 }
 
-class _HomePageState extends State<HomePage> {
+class _HomePageState extends State<HomePage> with WidgetsBindingObserver {
   final TextEditingController _urlController = TextEditingController();
   final DeviceDownloader _downloader = DeviceDownloader();
   final ShareIntake _share = ShareIntake();
@@ -52,6 +52,7 @@ class _HomePageState extends State<HomePage> {
   bool _busy = false;
   bool _stopRequested = false;
   bool _autoDownload = false;
+  bool _startWhenVisible = false;
   bool? _ready;
   bool _urlHasText = false;
   String _engineStatus = 'Starting downloader…';
@@ -64,6 +65,7 @@ class _HomePageState extends State<HomePage> {
   @override
   void initState() {
     super.initState();
+    WidgetsBinding.instance.addObserver(this);
     _urlController.addListener(_onUrlChanged);
     _events = _downloader.events.listen(_onEvent);
     _sharedEvents = _share.events.listen(_applyShare);
@@ -111,8 +113,18 @@ class _HomePageState extends State<HomePage> {
     _fetch();
   }
 
+  /// A queue that Android would not let us hold open starts as soon as the
+  /// app is back on screen, where a foreground service is allowed.
+  @override
+  void didChangeAppLifecycleState(AppLifecycleState state) {
+    if (state != AppLifecycleState.resumed || !_startWhenVisible) return;
+    setState(() => _startWhenVisible = false);
+    _downloadSelected();
+  }
+
   @override
   void dispose() {
+    WidgetsBinding.instance.removeObserver(this);
     _urlController.removeListener(_onUrlChanged);
     _events?.cancel();
     _sharedEvents?.cancel();
@@ -200,6 +212,7 @@ class _HomePageState extends State<HomePage> {
       _resolving = true;
       _error = null;
       _shareNotice = null;
+      _startWhenVisible = false;
       _link = null;
       _selected.clear();
       _states.clear();
@@ -230,6 +243,7 @@ class _HomePageState extends State<HomePage> {
       _link = null;
       _error = null;
       _shareNotice = null;
+      _startWhenVisible = false;
       _selected.clear();
       _states.clear();
       _progress.clear();
@@ -281,6 +295,7 @@ class _HomePageState extends State<HomePage> {
     setState(() {
       _busy = true;
       _stopRequested = false;
+      _startWhenVisible = false;
       _error = null;
       _busyDone = 0;
       _busyTotal = tracks.length;
@@ -292,8 +307,20 @@ class _HomePageState extends State<HomePage> {
 
     var savedCount = 0;
     // Holds the phone awake for the whole queue, so the screen going off or
-    // the app moving to the background does not pause it.
-    await _downloader.startQueue(tracks.length);
+    // the app moving to the background does not pause it. Android 12+ only
+    // allows this while the app is visible; if it refuses, nothing is
+    // downloaded yet — the queue waits for the next resume.
+    if (!await _downloader.startQueue(tracks.length)) {
+      if (!mounted) return;
+      setState(() {
+        _busy = false;
+        _startWhenVisible = true;
+        for (final track in tracks) {
+          _states.remove(track.id);
+        }
+      });
+      return;
+    }
     try {
       for (final track in tracks) {
         if (_stopRequested) break;
@@ -420,6 +447,12 @@ class _HomePageState extends State<HomePage> {
               _Notice(
                 icon: Icons.link_off_rounded,
                 message: _shareNotice!,
+              ),
+            ] else if (_startWhenVisible) ...[
+              const SizedBox(height: kSpace12),
+              _Notice(
+                icon: Icons.downloading_rounded,
+                message: 'Downloads start as soon as the app is back on screen.',
               ),
             ],
             if (_resolving) ...[

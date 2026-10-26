@@ -50,11 +50,16 @@ class DeviceDownloader {
 
   /// Holds the phone awake for a queue of [total] tracks, so the screen can go
   /// off or the app can be backgrounded while they download.
-  Future<void> startQueue(int total) async {
+  ///
+  /// Returns false when Android refuses the foreground service — on 12+ a
+  /// service cannot be started from the background — so the caller can wait
+  /// for the app to be on screen instead of downloading unheld.
+  Future<bool> startQueue(int total) async {
     try {
-      await _channel.invokeMethod<void>('startQueue', {'total': total});
+      return await _channel.invokeMethod<bool>('startQueue', {'total': total}) ??
+          false;
     } on PlatformException {
-      // Losing the wake lock is not worth failing the downloads over.
+      return false;
     }
   }
 

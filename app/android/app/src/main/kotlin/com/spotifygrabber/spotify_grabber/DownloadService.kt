@@ -12,6 +12,7 @@ import android.net.wifi.WifiManager
 import android.os.Build
 import android.os.IBinder
 import android.os.PowerManager
+import android.util.Log
 import androidx.core.app.NotificationCompat
 import androidx.core.content.ContextCompat
 
@@ -176,12 +177,26 @@ class DownloadService : Service() {
         private const val EXTRA_PERCENT = "percent"
         private const val EXTRA_SAVED = "saved"
 
-        /** Starts the service for a queue of [total] tracks. */
-        fun begin(context: Context, total: Int) {
+        /**
+         * Starts the service for a queue of [total] tracks.
+         *
+         * Returns false when Android refuses the start, which it does on
+         * API 31+ if the app is in the background: a foreground service may
+         * only be started while the app is visible. The caller waits for the
+         * app to come back instead of running a queue nobody is keeping
+         * awake.
+         */
+        fun begin(context: Context, total: Int): Boolean {
             val intent = Intent(context, DownloadService::class.java)
                 .setAction(ACTION_BEGIN)
                 .putExtra(EXTRA_TOTAL, total)
-            ContextCompat.startForegroundService(context, intent)
+            return try {
+                ContextCompat.startForegroundService(context, intent)
+                true
+            } catch (error: RuntimeException) {
+                Log.w(TAG, "could not start the download service", error)
+                false
+            }
         }
 
         /** Moves the notification to the track currently being fetched. */
