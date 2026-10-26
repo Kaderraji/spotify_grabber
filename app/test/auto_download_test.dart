@@ -1,8 +1,11 @@
+import 'dart:convert';
+
 import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
 import 'package:flutter_test/flutter_test.dart';
 import 'package:spotify_grabber/home_page.dart';
 import 'package:spotify_grabber/models.dart';
+import 'package:spotify_grabber/store.dart';
 
 void main() {
   TestWidgetsFlutterBinding.ensureInitialized();
@@ -12,6 +15,10 @@ void main() {
 
   final prefs = <String, String>{};
   final deviceCalls = <String>[];
+  final downloadQueries = <String>[];
+
+  /// The link handed over by the share sheet at launch, if any.
+  String? launchShare;
 
   /// Android 12+ refuses a foreground service started from the background.
   var serviceAllowed = true;
@@ -35,12 +42,17 @@ void main() {
   setUp(() {
     prefs.clear();
     deviceCalls.clear();
+    downloadQueries.clear();
+    launchShare = link;
     serviceAllowed = true;
     messenger
       ..setMockMethodCallHandler(
         const MethodChannel('grabber/on_device'),
         (call) async {
           deviceCalls.add(call.method);
+          if (call.method == 'download') {
+            downloadQueries.add((call.arguments as Map)['query'] as String);
+          }
           if (call.method == 'startQueue' && !serviceAllowed) {
             throw PlatformException(code: 'foreground_service_blocked');
           }
@@ -55,8 +67,9 @@ void main() {
       )
       ..setMockMethodCallHandler(
         const MethodChannel('grabber/share'),
-        (call) async =>
-            call.method == 'getInitialShare' ? {'link': link, 'rejected': null} : null,
+        (call) async => call.method == 'getInitialShare' && launchShare != null
+            ? {'link': launchShare, 'rejected': null}
+            : null,
       )
       ..setMockMethodCallHandler(
         const MethodChannel('grabber/store'),
@@ -182,6 +195,8 @@ void main() {
 
     expect(deviceCalls, isNot(contains('download')));
     expect(find.textContaining('back on screen'), findsOneWidget);
+    // The waiting queue is on disk, so a killed process still has it.
+    expect(prefs['pending'], contains('Rick Astley'));
 
     // Nothing retries while the app is away, however long it waits.
     serviceAllowed = true;
@@ -193,5 +208,56 @@ void main() {
 
     expect(deviceCalls, contains('download'));
     expect(find.textContaining('back on screen'), findsNothing);
+    expect(prefs['pending'], '');
+  });
+
+  /// A queue that had two tracks and saved the first before the app was killed.
+  Map<String, dynamic> halfDoneQueue() => PendingQueue(
+        link: ResolvedLink(
+          url: 'https://open.spotify.com/playlist/37i9dQZF1DXcBWIGoYBM5M',
+          kind: 'playlist',
+          title: 'Two tracks',
+          tracks: [
+            Track(
+              id: 'saved',
+              title: 'Already Saved',
+              artists: 'Daft Punk',
+              duration: 320,
+            ),
+            Track(
+              id: 'left',
+              title: 'Still To Do',
+              artists: 'Daft Punk',
+              duration: 210,
+            ),
+          ],
+        ),
+        remaining: ['left'],
+        format: 'm4a',
+      ).toJson();
+
+  testWidgets('a queue left unfinished starts again on the next launch',
+      (tester) async {
+    // A plain launch: nothing came in through the share sheet.
+    launchShare = null;
+    prefs['pending'] = jsonEncode(halfDoneQueue());
+
+    await pumpHome(tester);
+
+    expect(deviceCalls, contains('download'));
+    // The track that was already saved is not fetched a second time.
+    expect(downloadQueries, ['Daft Punk - Still To Do']);
+    expect(prefs['pending'], '');
+  });
+
+  testWidgets('a fresh share replaces the queue left behind', (tester) async {
+    prefs['pending'] = jsonEncode(halfDoneQueue());
+
+    await pumpHome(tester);
+
+    // The shared link is on screen and the old queue was not started.
+    expect(find.text('Never Gonna Give You Up'), findsWidgets);
+    expect(find.text('Already Saved'), findsNothing);
+    expect(deviceCalls, isNot(contains('download')));
   });
 }

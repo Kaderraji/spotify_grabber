@@ -3,6 +3,8 @@ import 'dart:convert';
 import 'package:flutter/material.dart' show ThemeMode;
 import 'package:flutter/services.dart';
 
+import 'models.dart';
+
 /// One track the app saved to the phone, kept so the history screen can show
 /// what was downloaded and when.
 class SavedTrack {
@@ -43,6 +45,43 @@ class SavedTrack {
         (json['savedAt'] as num?)?.toInt() ?? 0,
       ),
       path: json['path'] as String? ?? '',
+    );
+  }
+}
+
+/// A queue the app has started but not finished: the link it came from, the
+/// tracks still to download, and the format to save them in. Written before
+/// the first track and rewritten after each one, so a queue survives Android
+/// killing the app and starts again on the next launch instead of leaving the
+/// user to fetch the link a second time.
+class PendingQueue {
+  PendingQueue({
+    required this.link,
+    required this.remaining,
+    required this.format,
+  });
+
+  final ResolvedLink link;
+
+  /// Ids of the tracks that have not been saved yet, in playlist order.
+  final List<String> remaining;
+  final String format;
+
+  Map<String, dynamic> toJson() => {
+        'link': link.toJson(),
+        'remaining': remaining,
+        'format': format,
+      };
+
+  factory PendingQueue.fromJson(Map<String, dynamic> json) {
+    return PendingQueue(
+      link: ResolvedLink.fromJson(
+        Map<String, dynamic>.from(json['link'] as Map? ?? const {}),
+      ),
+      remaining: (json['remaining'] as List<dynamic>? ?? const [])
+          .map((id) => id as String)
+          .toList(),
+      format: json['format'] as String? ?? 'm4a',
     );
   }
 }
@@ -153,4 +192,22 @@ class Store {
   }
 
   Future<void> clearHistory() => _write('history', '[]');
+
+  /// The queue that was still running the last time the app was alive.
+  Future<PendingQueue?> pendingQueue() async {
+    final raw = await _read('pending');
+    if (raw == null || raw.isEmpty) return null;
+    try {
+      return PendingQueue.fromJson(jsonDecode(raw) as Map<String, dynamic>);
+    } on FormatException {
+      return null;
+    } on TypeError {
+      return null;
+    }
+  }
+
+  Future<void> savePendingQueue(PendingQueue queue) =>
+      _write('pending', jsonEncode(queue.toJson()));
+
+  Future<void> clearPendingQueue() => _write('pending', '');
 }

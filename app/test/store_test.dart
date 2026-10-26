@@ -1,6 +1,7 @@
 import 'package:flutter/material.dart' show ThemeMode;
 import 'package:flutter/services.dart';
 import 'package:flutter_test/flutter_test.dart';
+import 'package:spotify_grabber/models.dart';
 import 'package:spotify_grabber/store.dart';
 
 void main() {
@@ -113,6 +114,50 @@ void main() {
     test('broken stored JSON reads as an empty history', () async {
       values['history'] = 'not json';
       expect(await Store().history(), isEmpty);
+    });
+
+    test('a pending queue round trips and can be cleared', () async {
+      final store = Store();
+      expect(await store.pendingQueue(), isNull);
+
+      await store.savePendingQueue(
+        PendingQueue(
+          link: ResolvedLink(
+            url: 'https://open.spotify.com/album/1',
+            kind: 'album',
+            title: 'Discovery',
+            coverUrl: 'https://i.scdn.co/image/abc',
+            tracks: [
+              Track(
+                id: 'one',
+                title: 'One More Time',
+                artists: 'Daft Punk',
+                album: 'Discovery',
+                duration: 320,
+              ),
+            ],
+          ),
+          remaining: ['one'],
+          format: 'flac',
+        ),
+      );
+
+      final pending = await store.pendingQueue();
+      expect(pending, isNotNull);
+      expect(pending!.link.title, 'Discovery');
+      expect(pending.link.coverUrl, 'https://i.scdn.co/image/abc');
+      expect(pending.link.tracks.single.title, 'One More Time');
+      expect(pending.link.tracks.single.duration, 320);
+      expect(pending.remaining, ['one']);
+      expect(pending.format, 'flac');
+
+      await store.clearPendingQueue();
+      expect(await store.pendingQueue(), isNull);
+    });
+
+    test('broken stored JSON reads as no pending queue', () async {
+      values['pending'] = '{"link": 3}';
+      expect(await Store().pendingQueue(), isNull);
     });
   });
 }

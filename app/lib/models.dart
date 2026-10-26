@@ -21,6 +21,14 @@ class Track {
 
   String get displayName => '$artists - $title';
 
+  Map<String, dynamic> toJson() => {
+        'id': id,
+        'title': title,
+        'artists': artists,
+        'album': album,
+        'duration': duration,
+      };
+
   factory Track.fromJson(Map<String, dynamic> json) {
     return Track(
       id: json['id'] as String,
@@ -46,6 +54,14 @@ class ResolvedLink {
   final String title;
   final List<Track> tracks;
   final String? coverUrl;
+
+  Map<String, dynamic> toJson() => {
+        'url': url,
+        'kind': kind,
+        'title': title,
+        'cover_url': coverUrl,
+        'tracks': tracks.map((track) => track.toJson()).toList(),
+      };
 
   factory ResolvedLink.fromJson(Map<String, dynamic> json) {
     return ResolvedLink(

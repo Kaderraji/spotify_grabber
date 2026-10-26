@@ -77,7 +77,14 @@ class _HomePageState extends State<HomePage> with WidgetsBindingObserver {
     _prepare();
     _restoreFormat();
     _restoreAutoDownload();
-    _takeLaunchShare();
+    _startUp();
+  }
+
+  /// A share that opened the app gets first say; with none, a queue left over
+  /// from the last run carries on where it stopped.
+  Future<void> _startUp() async {
+    await _takeLaunchShare();
+    await _restorePendingQueue();
   }
 
   /// Only the clear button depends on the text, so rebuild on that one flip.
@@ -191,7 +198,26 @@ class _HomePageState extends State<HomePage> with WidgetsBindingObserver {
     }
   }
 
+  /// Preparations can overlap — the one at launch runs while a restored queue
+  /// waits for it — and starting the engines twice would race with itself.
+  Future<void>? _preparing;
+
   Future<void> _prepare() async {
+    final inFlight = _preparing;
+    if (inFlight != null) {
+      await inFlight;
+      return;
+    }
+    final run = _prepareOnce();
+    _preparing = run;
+    try {
+      await run;
+    } finally {
+      _preparing = null;
+    }
+  }
+
+  Future<void> _prepareOnce() async {
     setState(() {
       _ready = null;
       _engineStatus = 'Starting downloader…';
@@ -212,6 +238,36 @@ class _HomePageState extends State<HomePage> with WidgetsBindingObserver {
         _engineError = error.toString();
       });
     }
+  }
+
+  /// A queue Android interrupted — the process was killed, or the service was
+  /// refused and the app closed before it could try again. Only the tracks that
+  /// are still left are downloaded, and it starts on its own: asking the user to
+  /// paste the link again is what this exists to avoid.
+  Future<void> _restorePendingQueue() async {
+    final pending = await _store.pendingQueue();
+    if (!mounted || pending == null) return;
+    // A link from the share sheet, or one being fetched, wins over older work.
+    if (_link != null || _resolving || _busy) return;
+
+    final remaining = pending.remaining.toSet();
+    if (remaining.isEmpty || pending.link.tracks.isEmpty) {
+      await _store.clearPendingQueue();
+      return;
+    }
+
+    setState(() {
+      _link = pending.link;
+      _format = AudioFormat.byId(pending.format);
+      _selected
+        ..clear()
+        ..addAll(remaining);
+      for (final track in pending.link.tracks) {
+        if (!remaining.contains(track.id)) _states[track.id] = 'done';
+      }
+    });
+    _urlController.text = pending.link.url;
+    await _downloadSelected();
   }
 
   Future<void> _pasteFromClipboard() async {
@@ -246,6 +302,8 @@ class _HomePageState extends State<HomePage> with WidgetsBindingObserver {
       _progress.clear();
       _trackErrors.clear();
     });
+    // The link this replaces had its own queue, if any.
+    await _store.clearPendingQueue();
     try {
       final link = await widget.resolveLink(url);
       if (!mounted) return;
@@ -265,6 +323,7 @@ class _HomePageState extends State<HomePage> with WidgetsBindingObserver {
   }
 
   void _clearLink() {
+    _store.clearPendingQueue();
     _urlController.clear();
     setState(() {
       _link = null;
@@ -310,7 +369,8 @@ class _HomePageState extends State<HomePage> with WidgetsBindingObserver {
   Future<void> _downloadSelected({int attempt = 0}) async {
     final link = _link;
     if (link == null || _selected.isEmpty || _busy) return;
-    if (_ready == false) {
+    // A restored queue can get here while the engines are still starting up.
+    if (_ready != true) {
       await _prepare();
       if (_ready != true) return;
     }
@@ -331,6 +391,18 @@ class _HomePageState extends State<HomePage> with WidgetsBindingObserver {
         _trackErrors.remove(track.id);
       }
     });
+
+    // Written down before the queue is started and updated after each track, so
+    // work Android interrupts — a refused service, a killed process — is picked
+    // up on the next launch instead of waiting for the link to be pasted again.
+    final remaining = tracks.map((track) => track.id).toList();
+    await _store.savePendingQueue(
+      PendingQueue(
+        link: link,
+        remaining: List<String>.of(remaining),
+        format: _format.id,
+      ),
+    );
 
     var savedCount = 0;
     // Holds the phone awake for the whole queue, so the screen going off or
@@ -390,9 +462,20 @@ class _HomePageState extends State<HomePage> with WidgetsBindingObserver {
         }
         if (!mounted) return;
         setState(() => _busyDone++);
+        remaining.remove(track.id);
+        await _store.savePendingQueue(
+          PendingQueue(
+            link: link,
+            remaining: List<String>.of(remaining),
+            format: _format.id,
+          ),
+        );
       }
     } finally {
       await _downloader.stopQueue(savedCount);
+      // If the widget went away mid-queue the record stays, so the rest of the
+      // queue is still downloaded on the next launch.
+      if (mounted) await _store.clearPendingQueue();
     }
 
     if (!mounted) return;
