@@ -119,6 +119,14 @@ Follows the system light/dark setting by default. The ☀︎/☾ button in the t
 overrides it with *Match system*, *Light* or *Dark*; the choice is stored and
 applied on the next launch.
 
+## Launch screen
+
+The window Android shows while the engine starts is the icon writ large: the
+same green field and the same note-and-arrow mark, then straight into the app.
+Pre-Android 12 it comes from `drawable/launch_background.xml`; Android 12 and
+later use the system splash attributes in `values-v31/styles.xml`, so the OS
+animation and the app agree on the colours.
+
 ## Auto-download
 
 The tune button opens the app settings. *Auto-download* is off by default: a

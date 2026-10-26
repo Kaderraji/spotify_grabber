@@ -1,0 +1,6 @@
+<?xml version="1.0" encoding="utf-8"?>
+<resources>
+    <!-- The launch screen is the app icon writ large: the green field behind
+         the note, before the Flutter UI takes over. -->
+    <color name="splash_background">#1DB954</color>
+</resources>
