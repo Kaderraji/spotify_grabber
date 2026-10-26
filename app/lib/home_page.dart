@@ -18,10 +18,14 @@ class HomePage extends StatefulWidget {
     super.key,
     this.themeMode = ThemeMode.system,
     this.onThemeMode,
+    this.resolveLink = resolveSpotifyLink,
   });
 
   final ThemeMode themeMode;
   final ValueChanged<ThemeMode>? onThemeMode;
+
+  /// Overridable so tests can answer with a link instead of the network.
+  final Future<ResolvedLink> Function(String link) resolveLink;
 
   @override
   State<HomePage> createState() => _HomePageState();
@@ -47,6 +51,7 @@ class _HomePageState extends State<HomePage> {
   bool _resolving = false;
   bool _busy = false;
   bool _stopRequested = false;
+  bool _autoDownload = false;
   bool? _ready;
   bool _urlHasText = false;
   String _engineStatus = 'Starting downloader…';
@@ -64,6 +69,7 @@ class _HomePageState extends State<HomePage> {
     _sharedEvents = _share.events.listen(_applyShare);
     _prepare();
     _restoreFormat();
+    _restoreAutoDownload();
     _takeLaunchShare();
   }
 
@@ -119,6 +125,17 @@ class _HomePageState extends State<HomePage> {
     final saved = await _downloader.savedFormat();
     if (!mounted) return;
     setState(() => _format = saved);
+  }
+
+  Future<void> _restoreAutoDownload() async {
+    final enabled = await _store.autoDownload();
+    if (!mounted || enabled == _autoDownload) return;
+    setState(() => _autoDownload = enabled);
+  }
+
+  Future<void> _setAutoDownload(bool enabled) async {
+    setState(() => _autoDownload = enabled);
+    await _store.saveAutoDownload(enabled);
   }
 
   void _onEvent(Map<String, dynamic> event) {
@@ -190,13 +207,14 @@ class _HomePageState extends State<HomePage> {
       _trackErrors.clear();
     });
     try {
-      final link = await resolveSpotifyLink(url);
+      final link = await widget.resolveLink(url);
       if (!mounted) return;
       setState(() {
         _link = link;
         _selected.addAll(link.tracks.map((track) => track.id));
         _resolving = false;
       });
+      if (_autoDownload) await _downloadSelected();
     } catch (error) {
       if (!mounted) return;
       setState(() {
@@ -229,6 +247,17 @@ class _HomePageState extends State<HomePage> {
     if (picked == null || !mounted) return;
     setState(() => _format = picked);
     await _downloader.rememberFormat(picked);
+  }
+
+  Future<void> _openSettings() async {
+    await showModalBottomSheet<void>(
+      context: context,
+      showDragHandle: true,
+      builder: (context) => _SettingsSheet(
+        autoDownload: _autoDownload,
+        onAutoDownload: _setAutoDownload,
+      ),
+    );
   }
 
   Future<void> _openHistory() async {
@@ -350,6 +379,11 @@ class _HomePageState extends State<HomePage> {
       appBar: AppBar(
         title: const Text('Spotify Grabber'),
         actions: [
+          IconButton(
+            tooltip: 'Settings',
+            onPressed: _openSettings,
+            icon: const Icon(Icons.tune_rounded),
+          ),
           _ThemeMenu(mode: widget.themeMode, onChanged: widget.onThemeMode),
           IconButton(
             tooltip: 'Saved tracks',
@@ -774,6 +808,58 @@ class _HomePageState extends State<HomePage> {
           ),
         ),
       ],
+    );
+  }
+}
+
+/// The choices that are about the app rather than about one link.
+class _SettingsSheet extends StatefulWidget {
+  const _SettingsSheet({
+    required this.autoDownload,
+    required this.onAutoDownload,
+  });
+
+  final bool autoDownload;
+  final ValueChanged<bool> onAutoDownload;
+
+  @override
+  State<_SettingsSheet> createState() => _SettingsSheetState();
+}
+
+class _SettingsSheetState extends State<_SettingsSheet> {
+  late bool _autoDownload = widget.autoDownload;
+
+  @override
+  Widget build(BuildContext context) {
+    final theme = Theme.of(context);
+    return SafeArea(
+      top: false,
+      child: Padding(
+        padding: const EdgeInsets.fromLTRB(kSpace16, 0, kSpace16, kSpace16),
+        child: Column(
+          mainAxisSize: MainAxisSize.min,
+          crossAxisAlignment: CrossAxisAlignment.start,
+          children: [
+            Text('Settings', style: theme.textTheme.titleMedium),
+            const SizedBox(height: kSpace8),
+            SwitchListTile(
+              contentPadding: EdgeInsets.zero,
+              value: _autoDownload,
+              onChanged: (value) {
+                setState(() => _autoDownload = value);
+                widget.onAutoDownload(value);
+              },
+              title: Text('Auto-download', style: theme.textTheme.bodyLarge),
+              subtitle: Text(
+                'Start the queue as soon as a link is fetched or shared.',
+                style: theme.textTheme.bodySmall?.copyWith(
+                  color: theme.colorScheme.onSurfaceVariant,
+                ),
+              ),
+            ),
+          ],
+        ),
+      ),
     );
   }
 }

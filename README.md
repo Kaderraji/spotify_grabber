@@ -119,6 +119,13 @@ Follows the system light/dark setting by default. The ☀︎/☾ button in the t
 overrides it with *Match system*, *Light* or *Dark*; the choice is stored and
 applied on the next launch.
 
+## Auto-download
+
+The tune button opens the app settings. *Auto-download* is off by default: a
+fetched link is only listed, and you press Download. Turn it on and the queue
+starts by itself as soon as a link is fetched — including one that arrives from
+the share sheet — using the format you last picked. The choice is remembered.
+
 ## Formats
 
 The format sheet shows what each option is for and roughly how big a track gets:
