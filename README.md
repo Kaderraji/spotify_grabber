@@ -22,8 +22,11 @@ The details that make this work:
   Android there is no Deno build. yt-dlp falls back to its built-in quickjs
   runtime, which is enough for the audio formats used here.
 - **Search is duration-filtered.** When the Spotify track length is known, the
-  YouTube result must be within ±20 s, which drops sped-up, slowed and cover
-  versions. If nothing matches, the download retries without the filter.
+  top five YouTube results are searched and the first one within ±20 s is kept,
+  which drops sped-up, slowed and cover versions — and skips the music video
+  that runs a minute longer than the song. Only if none of the five fits does
+  the download retry without the filter. A rejected candidate exits cleanly
+  with no file, so the code checks for the file rather than for an exception.
 - **Spotify metadata comes from the embed page**, not the Web API (which now
   needs a Premium account to create keys). Title, artists and track order are
   exact; album and release year are not exposed there. The page is small
@@ -122,18 +125,21 @@ The format sheet shows what each option is for and roughly how big a track gets:
 
 | Format | Why pick it | Measured size |
 |---|---|---|
-| M4A (AAC) | Spotify's own codec; balanced, plays everywhere (default) | 11.5 MB |
+| M4A (AAC) | Spotify's own codec; balanced, plays everywhere (default) | 3.8 MB |
 | MP3 (192 kbps) | Opens on absolutely anything, old players included | 5.2 MB |
 | Opus | Smallest file at the same quality; needs a recent player | 3.4 MB |
 | FLAC | Saved without the lossy step, for archiving | 47 MB |
 
 Those are real numbers from one 3:33 track on the phone, not estimates; the
-in-app sheet rounds them to "per 4-minute track". M4A is large because
-`--audio-quality 0` lets ffmpeg encode AAC at its best VBR setting.
+in-app sheet rounds them to "per 4-minute track".
 
-The format is passed to yt-dlp as `--audio-format` plus ffmpeg re-encodes it;
-cover art and tags are embedded for every option. The choice is stored in the
-app's preferences, so it survives restarts.
+The format is passed to yt-dlp as `--audio-format`, and the source is chosen to
+match it (`-f bestaudio[ext=m4a]`, `[ext=webm]` for Opus): when YouTube already
+serves that container yt-dlp remuxes instead of re-encoding, which removes
+~20 s of phone CPU per track and stops a 3.5 MB AAC stream from being inflated
+to 12 MB. Only when no such source exists does ffmpeg encode — 256K for AAC,
+192K for MP3. Cover art and tags are embedded for every option. The choice is
+stored in the app's preferences, so it survives restarts.
 
 ## Tests
 

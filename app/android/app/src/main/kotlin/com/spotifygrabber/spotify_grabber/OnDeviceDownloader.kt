@@ -65,11 +65,16 @@ class OnDeviceDownloader(private val context: Context) {
         val workDir = File(context.cacheDir, "downloads").apply { mkdirs() }
         workDir.listFiles { file -> file.name.startsWith(baseName) }?.forEach { it.delete() }
 
-        fun run(filtered: Boolean): YoutubeDLResponse {
-            val request = YoutubeDLRequest("ytsearch1:$query")
+        fun run(search: String, filtered: Boolean): YoutubeDLResponse {
+            val request = YoutubeDLRequest("$search:$query")
             request.addOption("-x")
             request.addOption("--audio-format", spec.container)
             request.addOption("--audio-quality", spec.quality)
+            // Pick a source that is already in the target container when
+            // YouTube has one. yt-dlp then remuxes instead of re-encoding:
+            // on a phone an AAC encode of a 4-minute track costs ~20 s and
+            // inflates 3.5 MB of AAC into 12 MB, for no audible gain.
+            request.addOption("-f", spec.source)
             request.addOption("--no-playlist")
             request.addOption("--embed-metadata")
             // YouTube's own title reads "(Official Video) (4K Remaster)" and
@@ -89,30 +94,36 @@ class OnDeviceDownloader(private val context: Context) {
                     "--match-filter",
                     "duration > ${durationSec - 20} & duration < ${durationSec + 20}",
                 )
+                // Search five candidates but keep the first one that fits.
+                // The top hit is often the music video, which runs long.
+                request.addOption("--max-downloads", "1")
             }
             return YoutubeDL.getInstance().execute(request, null) { progress, _, _ ->
                 if (progress >= 0f) onProgress(progress)
             }
         }
 
-        var failure: Exception? = null
-        if (durationSec > 30) {
-            try {
-                run(true)
-            } catch (error: Exception) {
-                // No result matched the duration window; try again unfiltered.
-                Log.i(TAG, "no match within duration window for $query", error)
-                failure = error
-            }
-        }
-        if (failure != null || durationSec <= 30) {
-            run(false)
-        }
-
-        val produced = workDir.listFiles { file -> file.name.startsWith(baseName) }
+        fun produced(): File? = workDir.listFiles { file -> file.name.startsWith(baseName) }
             ?.filter { it.isFile && it.length() > 0 }
             ?.maxByOrNull { it.length() }
-            ?: throw IllegalStateException("No audio found for \"$query\".")
+
+        // A rejected candidate is not an error: yt-dlp exits cleanly having
+        // saved nothing, so look for the file rather than for an exception.
+        var file: File? = null
+        if (durationSec > 30) {
+            try {
+                run("ytsearch5", filtered = true)
+            } catch (error: Exception) {
+                Log.i(TAG, "no result inside the duration window for $query", error)
+            }
+            file = produced()
+        }
+        if (file == null) {
+            run("ytsearch1", filtered = false)
+            file = produced()
+        }
+
+        val produced = file ?: throw IllegalStateException("No audio found for \"$query\".")
 
         val extension = produced.extension.ifEmpty { spec.container }
         val saved = publish(
@@ -242,6 +253,7 @@ class OnDeviceDownloader(private val context: Context) {
         val container: String,
         val quality: String,
         val mime: String,
+        val source: String,
     ) {
         fun mimeType(extension: String): String = when (extension) {
             "m4a", "aac", "mp4" -> "audio/mp4"
@@ -254,10 +266,18 @@ class OnDeviceDownloader(private val context: Context) {
         }
 
         companion object {
-            private val M4A = AudioSpec("m4a", "0", "audio/mp4")
-            private val MP3 = AudioSpec("mp3", "192K", "audio/mpeg")
-            private val OPUS = AudioSpec("opus", "0", "audio/opus")
-            private val FLAC = AudioSpec("flac", "0", "audio/flac")
+            // 256K only applies when no m4a source exists and the file has
+            // to be re-encoded; "0" would spend seconds on a 430 kbps AAC.
+            private val M4A = AudioSpec(
+                "m4a", "256K", "audio/mp4", "bestaudio[ext=m4a]/bestaudio",
+            )
+            private val MP3 = AudioSpec("mp3", "192K", "audio/mpeg", "bestaudio/best")
+            private val OPUS = AudioSpec(
+                "opus", "0", "audio/opus", "bestaudio[ext=webm]/bestaudio",
+            )
+            private val FLAC = AudioSpec(
+                "flac", "0", "audio/flac", "bestaudio[ext=m4a]/bestaudio",
+            )
 
             fun of(id: String): AudioSpec = when (id) {
                 "mp3" -> MP3
