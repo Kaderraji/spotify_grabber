@@ -1,10 +1,16 @@
+import 'dart:async';
+
 import 'package:flutter/material.dart';
 
 import 'app_theme.dart';
 import 'home_page.dart';
+import 'spotify_meta.dart';
 import 'store.dart';
 
 void main() {
+  // Open the connection to Spotify while the first frame is drawn, so the
+  // first link does not pay for DNS and a TLS handshake.
+  unawaited(warmUpSpotify());
   runApp(const GrabberApp());
 }
 

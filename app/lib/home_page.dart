@@ -388,7 +388,10 @@ class _HomePageState extends State<HomePage> {
                 message: _shareNotice!,
               ),
             ],
-            if (link == null) ...[
+            if (_resolving) ...[
+              const SizedBox(height: kSpace32),
+              _fetching(theme),
+            ] else if (link == null) ...[
               const SizedBox(height: kSpace32),
               _emptyState(theme),
             ] else ...[
@@ -502,6 +505,27 @@ class _HomePageState extends State<HomePage> {
             style: theme.textTheme.bodySmall?.copyWith(
               color: theme.colorScheme.onSurfaceVariant,
             ),
+          ),
+        ),
+      ],
+    );
+  }
+
+  /// Spotify answers in a second or two; say what is happening meanwhile
+  /// instead of leaving the screen looking empty.
+  Widget _fetching(ThemeData theme) {
+    return Row(
+      children: [
+        const SizedBox(
+          height: 14,
+          width: 14,
+          child: CircularProgressIndicator(strokeWidth: 1.6),
+        ),
+        const SizedBox(width: kSpace8),
+        Text(
+          'Fetching tracks from Spotify…',
+          style: theme.textTheme.bodySmall?.copyWith(
+            color: theme.colorScheme.onSurfaceVariant,
           ),
         ),
       ],

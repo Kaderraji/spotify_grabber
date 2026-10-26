@@ -20,6 +20,35 @@ final _linkPattern = RegExp(
   r'|spotify:(track|playlist|album):)([A-Za-z0-9]{22})',
 );
 
+/// One connection for every fetch. `http.get` builds and closes a client per
+/// call, which pays DNS, TCP and a TLS handshake again each time; on a phone
+/// that is most of a slow fetch.
+final http.Client _client = http.Client();
+
+/// Links resolved in this session. A link that was just fetched — after a
+/// failed download, or shared twice — comes back without a round trip.
+const int _cacheSize = 12;
+const Duration _cacheLife = Duration(minutes: 10);
+final Map<String, ({ResolvedLink link, DateTime at})> _cache = {};
+
+/// Opens the connection before the user asks for anything, so the first fetch
+/// only waits for Spotify's answer. Safe to ignore the result.
+Future<void> warmUpSpotify() async {
+  try {
+    await _client
+        .head(Uri.parse('https://open.spotify.com/'), headers: _headers)
+        .timeout(const Duration(seconds: 10));
+  } catch (_) {
+    // Offline, or Spotify is unhappy: the real fetch will report it.
+  }
+}
+
+const Map<String, String> _headers = {
+  'User-Agent': _userAgent,
+  'Accept-Language': 'en',
+  'Accept': 'text/html',
+};
+
 /// Reads a track/album/playlist straight from Spotify's public embed page.
 /// No account, no developer credentials, no server.
 Future<ResolvedLink> resolveSpotifyLink(String link) async {
@@ -32,12 +61,18 @@ Future<ResolvedLink> resolveSpotifyLink(String link) async {
   final kind = match.group(1) ?? match.group(2)!;
   final id = match.group(3)!;
 
+  final key = '$kind:$id';
+  final cached = _cache[key];
+  if (cached != null && DateTime.now().difference(cached.at) < _cacheLife) {
+    return cached.link;
+  }
+
   final http.Response response;
   try {
-    response = await http
+    response = await _client
         .get(
           Uri.parse('https://open.spotify.com/embed/$kind/$id'),
-          headers: {'User-Agent': _userAgent, 'Accept-Language': 'en'},
+          headers: _headers,
         )
         .timeout(const Duration(seconds: 25));
   } catch (error) {
@@ -78,13 +113,22 @@ Future<ResolvedLink> resolveSpotifyLink(String link) async {
     throw SpotifyLinkException('Spotify listed no playable tracks.');
   }
 
-  return ResolvedLink(
+  final resolved = ResolvedLink(
     url: link.trim(),
     kind: kind,
     title: entity['name'] as String? ?? entity['title'] as String? ?? id,
     coverUrl: _coverFrom(entity),
     tracks: tracks,
   );
+  _remember(key, resolved);
+  return resolved;
+}
+
+void _remember(String key, ResolvedLink link) {
+  _cache[key] = (link: link, at: DateTime.now());
+  if (_cache.length <= _cacheSize) return;
+  // Oldest first: the map keeps insertion order.
+  _cache.remove(_cache.keys.first);
 }
 
 Track? _trackFrom(Map<String, dynamic> raw) {

@@ -26,7 +26,10 @@ The details that make this work:
   versions. If nothing matches, the download retries without the filter.
 - **Spotify metadata comes from the embed page**, not the Web API (which now
   needs a Premium account to create keys). Title, artists and track order are
-  exact; album and release year are not exposed there.
+  exact; album and release year are not exposed there. The page is small
+  (~10 KB), so the wait is Spotify's own response time: one keep-alive
+  connection is opened at launch and reused for every fetch, and a link that
+  was resolved in the last ten minutes is answered from memory.
 - **File tags are rewritten to the Spotify values.** yt-dlp's own tags carry the
   YouTube title (`... (Official Video) (4K Remaster)`) and the channel name, so
   `--replace-in-metadata` overwrites title and artist before the tags are
