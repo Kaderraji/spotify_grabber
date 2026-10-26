@@ -27,6 +27,14 @@ android {
         versionCode = flutter.versionCode
         versionName = flutter.versionName
         testInstrumentationRunner = "androidx.test.runner.AndroidJUnitRunner"
+
+        // Package arm64 only. yt-dlp, ffmpeg and deno ship as native libraries
+        // for four ABIs and only one is ever loaded on a phone, so the other
+        // three were ~120 MB of dead weight that also slowed install and first
+        // launch. Remove this filter to build for an x86 emulator.
+        ndk {
+            abiFilters.add("arm64-v8a")
+        }
     }
 
     buildTypes {
