@@ -53,6 +53,11 @@ class _HomePageState extends State<HomePage> with WidgetsBindingObserver {
   bool _stopRequested = false;
   bool _autoDownload = false;
   bool _startWhenVisible = false;
+
+  /// Tracked here as well as in the observer, because the retry below has to
+  /// know whether the app is on screen without waiting for a lifecycle event.
+  bool _inForeground = true;
+  Timer? _startRetry;
   bool? _ready;
   bool _urlHasText = false;
   String _engineStatus = 'Starting downloader…';
@@ -113,17 +118,39 @@ class _HomePageState extends State<HomePage> with WidgetsBindingObserver {
     _fetch();
   }
 
-  /// A queue that Android would not let us hold open starts as soon as the
-  /// app is back on screen, where a foreground service is allowed.
+  /// A queue that Android would not let us hold open starts on its own as soon
+  /// as the app is back on screen, where a foreground service is allowed.
   @override
   void didChangeAppLifecycleState(AppLifecycleState state) {
-    if (state != AppLifecycleState.resumed || !_startWhenVisible) return;
+    _inForeground = state == AppLifecycleState.resumed;
+    if (!_inForeground || !_startWhenVisible) return;
+    _startRetry?.cancel();
     setState(() => _startWhenVisible = false);
     _downloadSelected();
   }
 
+  /// Coming back to the foreground is handled by the observer. These bounded
+  /// retries cover the other case: a refusal while the app is already on
+  /// screen, where the resume that would have retried has already happened
+  /// and waiting for another one would mean waiting for the user to leave.
+  static const List<Duration> _startRetryDelays = <Duration>[
+    Duration(milliseconds: 400),
+    Duration(seconds: 1),
+    Duration(seconds: 3),
+  ];
+
+  void _retryStart(int attempt) {
+    _startRetry?.cancel();
+    if (!_inForeground || attempt >= _startRetryDelays.length) return;
+    _startRetry = Timer(_startRetryDelays[attempt], () {
+      if (!mounted || !_startWhenVisible || _busy || !_inForeground) return;
+      _downloadSelected(attempt: attempt + 1);
+    });
+  }
+
   @override
   void dispose() {
+    _startRetry?.cancel();
     WidgetsBinding.instance.removeObserver(this);
     _urlController.removeListener(_onUrlChanged);
     _events?.cancel();
@@ -280,7 +307,7 @@ class _HomePageState extends State<HomePage> with WidgetsBindingObserver {
     );
   }
 
-  Future<void> _downloadSelected() async {
+  Future<void> _downloadSelected({int attempt = 0}) async {
     final link = _link;
     if (link == null || _selected.isEmpty || _busy) return;
     if (_ready == false) {
@@ -319,6 +346,7 @@ class _HomePageState extends State<HomePage> with WidgetsBindingObserver {
           _states.remove(track.id);
         }
       });
+      _retryStart(attempt);
       return;
     }
     try {

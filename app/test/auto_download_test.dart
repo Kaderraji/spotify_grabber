@@ -84,6 +84,26 @@ void main() {
       );
   });
 
+  /// Android delivers the steps in order; jumping straight to paused trips an
+  /// assertion in the framework's own lifecycle listener.
+  void lifecycleTo(WidgetTester tester, List<AppLifecycleState> states) {
+    for (final state in states) {
+      tester.binding.handleAppLifecycleStateChanged(state);
+    }
+  }
+
+  void goToBackground(WidgetTester tester) => lifecycleTo(tester, const [
+        AppLifecycleState.inactive,
+        AppLifecycleState.hidden,
+        AppLifecycleState.paused,
+      ]);
+
+  void comeToForeground(WidgetTester tester) => lifecycleTo(tester, const [
+        AppLifecycleState.hidden,
+        AppLifecycleState.inactive,
+        AppLifecycleState.resumed,
+      ]);
+
   Future<void> pumpHome(WidgetTester tester) async {
     await tester.pumpWidget(
       MaterialApp(home: HomePage(resolveLink: fakeResolve)),
@@ -122,7 +142,7 @@ void main() {
     expect(prefs['history'], contains('Never Gonna Give You Up'));
   });
 
-  testWidgets('a queue refused in the background waits for the app',
+  testWidgets('a queue refused while the app is on screen starts by itself',
       (tester) async {
     prefs['auto_download'] = '1';
     serviceAllowed = false;
@@ -130,13 +150,45 @@ void main() {
     await pumpHome(tester);
 
     expect(deviceCalls, isNot(contains('download')));
-    expect(
-      find.textContaining('back on screen'),
-      findsOneWidget,
-    );
+    expect(find.textContaining('back on screen'), findsOneWidget);
 
+    // No lifecycle event: the app never left, so the refusal is retried on its
+    // own once Android is willing to start the service.
     serviceAllowed = true;
-    tester.binding.handleAppLifecycleStateChanged(AppLifecycleState.resumed);
+    await tester.pump(const Duration(seconds: 1));
+    await tester.pumpAndSettle();
+
+    expect(deviceCalls, contains('download'));
+    expect(find.textContaining('back on screen'), findsNothing);
+  });
+
+  testWidgets('a queue refused in the background waits for the app',
+      (tester) async {
+    prefs['auto_download'] = '1';
+    serviceAllowed = false;
+
+    // The link resolves behind another app, so the refusal happens while the
+    // app is not on screen and no resume has happened yet.
+    Future<ResolvedLink> resolveInBackground(String url) async {
+      final resolved = await fakeResolve(url);
+      goToBackground(tester);
+      return resolved;
+    }
+
+    await tester.pumpWidget(
+      MaterialApp(home: HomePage(resolveLink: resolveInBackground)),
+    );
+    await tester.pumpAndSettle();
+
+    expect(deviceCalls, isNot(contains('download')));
+    expect(find.textContaining('back on screen'), findsOneWidget);
+
+    // Nothing retries while the app is away, however long it waits.
+    serviceAllowed = true;
+    await tester.pump(const Duration(seconds: 5));
+    expect(deviceCalls, isNot(contains('download')));
+
+    comeToForeground(tester);
     await tester.pumpAndSettle();
 
     expect(deviceCalls, contains('download'));
