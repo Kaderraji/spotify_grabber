@@ -53,14 +53,15 @@ The details that make this work:
 ## Build and install
 
 ```bash
-cd app
-JAVA_HOME=/path/to/jdk21 flutter build apk --target-platform android-arm64
-adb install -r build/app/outputs/flutter-apk/app-debug.apk
+./scripts/install-release.sh
 ```
 
-`--target-platform android-arm64` builds the arm64 Flutter engine; the
-`youtubedl-android` AARs still carry all four ABIs, so the APK is around 250 MB.
-Use `--release` for a faster build (size is dominated by those libraries).
+Builds the arm64 release APK and installs it on the connected phone in one step.
+For a debug build with hot reload, run `flutter run` in `app/` instead.
+
+The APK is arm64 only: `ndk { abiFilters }` in `app/android/app/build.gradle.kts`
+drops the three other ABIs that yt-dlp, ffmpeg and deno ship, which takes it from
+~207 MB to ~62 MB. Remove that filter to build for an x86 emulator.
 
 Gradle downloads the Flutter engine jars from `storage.googleapis.com`. If that
 host is blocked the build hangs at `Running Gradle task 'assembleDebug'...`;
