@@ -50,10 +50,10 @@ ThemeData buildTheme(Brightness brightness) {
         iconSize: 22,
       ),
     ),
+    // No background colour here: it would also paint the tonal variant, which
+    // is how a secondary action ended up as loud as the primary one.
     filledButtonTheme: FilledButtonThemeData(
       style: FilledButton.styleFrom(
-        backgroundColor: scheme.primary,
-        foregroundColor: scheme.onPrimary,
         disabledBackgroundColor: scheme.surfaceContainerHigh,
         disabledForegroundColor: scheme.onSurfaceVariant,
         minimumSize: const Size(0, 48),
