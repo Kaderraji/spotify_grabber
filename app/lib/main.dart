@@ -1,7 +1,6 @@
 import 'package:flutter/material.dart';
 
 import 'app_theme.dart';
-import 'history_page.dart';
 import 'home_page.dart';
 import 'store.dart';
 
@@ -45,7 +44,7 @@ class _GrabberAppState extends State<GrabberApp> {
       theme: buildTheme(Brightness.light),
       darkTheme: buildTheme(Brightness.dark),
       themeMode: _mode,
-      home: const HistoryPage(), // TEMPORARY preview
+      home: HomePage(themeMode: _mode, onThemeMode: _setThemeMode),
     );
   }
 }

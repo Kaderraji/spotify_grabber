@@ -1,5 +1,6 @@
 import 'package:flutter/material.dart';
 
+import 'app_theme.dart';
 import 'store.dart';
 
 /// Everything the app saved to the phone, newest first, grouped by day.
@@ -47,64 +48,89 @@ class _HistoryPageState extends State<HistoryPage> {
 
   @override
   Widget build(BuildContext context) {
-    final theme = Theme.of(context);
-    return Scaffold(
-      appBar: AppBar(
-        title: const Text('Saved tracks'),
-        actions: [
-          IconButton(
-            tooltip: 'Clear history',
-            onPressed: _clearHistory,
-            icon: const Icon(Icons.delete_outline_rounded),
-          ),
-        ],
-      ),
-      body: FutureBuilder<List<SavedTrack>>(
-        future: _history,
-        builder: (context, snapshot) {
-          if (snapshot.connectionState != ConnectionState.done) {
-            return const Center(
-              child: SizedBox(
-                height: 20,
-                width: 20,
-                child: CircularProgressIndicator(strokeWidth: 2),
-              ),
-            );
-          }
-          final tracks = snapshot.data ?? const <SavedTrack>[];
-          if (tracks.isEmpty) {
-            return Center(
-              child: Padding(
-                padding: const EdgeInsets.all(32),
-                child: Column(
-                  mainAxisSize: MainAxisSize.min,
-                  children: [
-                    Text('Nothing saved yet', style: theme.textTheme.titleSmall),
-                    const SizedBox(height: 4),
-                    Text(
-                      'Tracks you download show up here with their format, '
-                      'size and date.',
-                      textAlign: TextAlign.center,
-                      style: theme.textTheme.bodySmall?.copyWith(
-                        color: theme.colorScheme.onSurfaceVariant,
-                      ),
-                    ),
-                    const SizedBox(height: 16),
-                    FilledButton(
-                      onPressed: () => Navigator.of(context).pop(),
-                      child: const Text('Grab a link'),
-                    ),
-                  ],
+    return FutureBuilder<List<SavedTrack>>(
+      future: _history,
+      builder: (context, snapshot) {
+        final loading = snapshot.connectionState != ConnectionState.done;
+        final tracks = snapshot.data ?? const <SavedTrack>[];
+        final theme = Theme.of(context);
+        return Scaffold(
+          appBar: AppBar(
+            title: const Text('Saved tracks'),
+            actions: [
+              if (tracks.isNotEmpty)
+                IconButton(
+                  tooltip: 'Clear history',
+                  onPressed: _clearHistory,
+                  icon: const Icon(Icons.delete_outline_rounded),
                 ),
+              const SizedBox(width: kSpace4),
+            ],
+          ),
+          body: loading
+              ? const Center(
+                  child: SizedBox(
+                    height: 20,
+                    width: 20,
+                    child: CircularProgressIndicator(strokeWidth: 2),
+                  ),
+                )
+              : tracks.isEmpty
+                  ? _empty(theme)
+                  : _list(theme, tracks),
+        );
+      },
+    );
+  }
+
+  Widget _empty(ThemeData theme) {
+    return Center(
+      child: Padding(
+        padding: const EdgeInsets.all(kSpace32),
+        child: Column(
+          mainAxisSize: MainAxisSize.min,
+          children: [
+            Text('Nothing saved yet', style: theme.textTheme.titleSmall),
+            const SizedBox(height: kSpace4),
+            Text(
+              'Tracks you download show up here with their format, size and '
+              'date.',
+              textAlign: TextAlign.center,
+              style: theme.textTheme.bodySmall?.copyWith(
+                color: theme.colorScheme.onSurfaceVariant,
               ),
-            );
-          }
-          return ListView(
-            padding: const EdgeInsets.fromLTRB(16, 4, 16, 24),
-            children: _grouped(theme, tracks),
-          );
-        },
+            ),
+            const SizedBox(height: kSpace16),
+            FilledButton(
+              onPressed: () => Navigator.of(context).pop(),
+              child: const Text('Grab a link'),
+            ),
+          ],
+        ),
       ),
+    );
+  }
+
+  Widget _list(ThemeData theme, List<SavedTrack> tracks) {
+    final total = tracks.fold<int>(0, (sum, track) => sum + track.bytes);
+    return ListView(
+      padding: const EdgeInsets.fromLTRB(
+        kSpace16,
+        kSpace4,
+        kSpace16,
+        kSpace32,
+      ),
+      children: [
+        Text(
+          '${tracks.length} track${tracks.length == 1 ? '' : 's'} · '
+          '${formatBytes(total)}',
+          style: theme.textTheme.bodySmall?.copyWith(
+            color: theme.colorScheme.onSurfaceVariant,
+            fontFeatures: const [FontFeature.tabularFigures()],
+          ),
+        ),
+        ..._grouped(theme, tracks),
+      ],
     );
   }
 
@@ -119,7 +145,10 @@ class _HistoryPageState extends State<HistoryPage> {
         currentDay = day;
         widgets.add(
           Padding(
-            padding: EdgeInsets.only(top: i == 0 ? 8 : 20, bottom: 4),
+            padding: EdgeInsets.only(
+              top: i == 0 ? kSpace16 : kSpace24,
+              bottom: kSpace4,
+            ),
             child: Text(
               day,
               style: theme.textTheme.bodySmall?.copyWith(
@@ -156,7 +185,7 @@ class _HistoryRow extends StatelessWidget {
         '${time.minute.toString().padLeft(2, '0')}';
 
     return Padding(
-      padding: const EdgeInsets.symmetric(vertical: 12),
+      padding: const EdgeInsets.symmetric(vertical: kSpace12),
       child: Row(
         children: [
           Expanded(
@@ -183,7 +212,7 @@ class _HistoryRow extends StatelessWidget {
               ],
             ),
           ),
-          const SizedBox(width: 12),
+          const SizedBox(width: kSpace12),
           Text(
             clock,
             style: theme.textTheme.bodySmall?.copyWith(

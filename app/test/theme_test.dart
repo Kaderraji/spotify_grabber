@@ -60,8 +60,11 @@ void main() {
     await tester.pumpWidget(const GrabberApp());
     await tester.pump();
     expect(modeOf(tester), ThemeMode.system);
+    // The app starts on the home screen, not the history list.
+    expect(find.text('Spotify Grabber'), findsOneWidget);
+    expect(find.text('Saved tracks'), findsNothing);
 
-    await tester.tap(find.byTooltip('Theme'));
+    await tester.tap(find.byTooltip('Appearance'));
     await tester.pumpAndSettle();
     // The menu label is wrapped in an IgnorePointer, so the tap reports a
     // miss even though the menu row takes it.

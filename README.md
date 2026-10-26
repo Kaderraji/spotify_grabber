@@ -80,7 +80,7 @@ unlocked (and "Install via USB" enabled in Developer options).
    share it straight to *Spotify Grabber* from Spotify's share sheet and the
    link is pasted and fetched for you.
 2. **Fetch tracks** — every track is listed with its length; untick what you
-   don't want, or use *Select all* / *None*.
+   don't want, or use *Select all* / *Clear*.
 3. Pick a **format** (see below). The choice is remembered.
 4. **Download** — tracks are downloaded one after another with a live
    percentage. `Stop after this track` ends the queue after the current file.
@@ -92,6 +92,9 @@ unlocked (and "Install via USB" enabled in Developer options).
 5. Files land in `Music/SpotifyGrabber/<artist> - <title>.<ext>`, indexed by the
    system so any music player sees them. Re-downloading a song replaces the old
    file — including when the format changed — instead of adding a second copy.
+6. The 🕘 button opens **Saved tracks**: every finished download with its
+   artist, format, file size and time, grouped by day. *Clear history* empties
+   the list after asking; the audio files are not touched.
 
 Failures show the reason under the track (usually "No audio found for ..." when
 YouTube has no close-duration match).
@@ -101,7 +104,14 @@ system share sheet for any text. The shared text is scanned for a track, album
 or playlist link (Spotify usually wraps it in a “song – artist … #Spotify”
 line) and the bare link is what fills the field. Sharing while a download is
 running leaves the link in the field and asks you to fetch it afterwards
-instead of interrupting the queue.
+instead of interrupting the queue. Sharing anything without a Spotify link in
+it says so on the home screen instead of opening to an empty field.
+
+## Appearance
+
+Follows the system light/dark setting by default. The ☀︎/☾ button in the top bar
+overrides it with *Match system*, *Light* or *Dark*; the choice is stored and
+applied on the next launch.
 
 ## Formats
 
@@ -134,5 +144,5 @@ cd app && flutter test && flutter analyze
   and this app is not meant for redistribution.
 - `server/` is the older PC-based downloader. The app no longer talks to it —
   it is kept because it still works standalone from the command line.
-- A download uses roughly the same data as watching the video, and the phone
-  must stay awake with the app in the foreground while it runs.
+- Downloads keep running while the app is in the background; the foreground
+  service and its wake lock are what allow the screen to go off.

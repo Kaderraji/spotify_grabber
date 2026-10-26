@@ -7,6 +7,14 @@ const Color kAccent = Color(0xFF1DB954);
 /// Radii stay small and consistent: 10 for controls, 8 for small surfaces.
 const double kRadius = 10;
 
+/// One spacing scale for the whole app, so gaps are never chosen by feel.
+const double kSpace4 = 4;
+const double kSpace8 = 8;
+const double kSpace12 = 12;
+const double kSpace16 = 16;
+const double kSpace24 = 24;
+const double kSpace32 = 32;
+
 ThemeData buildTheme(Brightness brightness) {
   final dark = brightness == Brightness.dark;
   final scheme = dark ? _dark : _light;
@@ -31,9 +39,8 @@ ThemeData buildTheme(Brightness brightness) {
       scrolledUnderElevation: 0,
       centerTitle: false,
       iconTheme: IconThemeData(color: scheme.onSurface, size: 22),
-      titleTextStyle: base.textTheme.titleMedium?.copyWith(
+      titleTextStyle: _text(base.textTheme).titleLarge?.copyWith(
         color: scheme.onSurface,
-        fontWeight: FontWeight.w600,
       ),
     ),
     iconButtonTheme: IconButtonThemeData(
@@ -112,6 +119,7 @@ ThemeData buildTheme(Brightness brightness) {
       contentTextStyle: base.textTheme.bodyMedium?.copyWith(
         color: scheme.onInverseSurface,
       ),
+      actionTextColor: scheme.inversePrimary,
       shape: RoundedRectangleBorder(
         borderRadius: BorderRadius.circular(kRadius),
       ),
