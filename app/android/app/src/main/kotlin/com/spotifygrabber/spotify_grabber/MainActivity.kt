@@ -3,6 +3,7 @@ package com.spotifygrabber.spotify_grabber
 import android.Manifest
 import android.content.Intent
 import android.content.pm.PackageManager
+import android.net.ConnectivityManager
 import android.os.Build
 import android.os.Handler
 import android.os.Looper
@@ -103,6 +104,39 @@ class MainActivity : FlutterActivity() {
                 else -> result.notImplemented()
             }
         }
+
+        // The Wi-Fi-only setting asks before a queue starts and keeps watching
+        // while it runs, so a drop to mobile data pauses instead of spending it.
+        MethodChannel(
+            flutterEngine.dartExecutor.binaryMessenger,
+            "grabber/network",
+        ).setMethodCallHandler { call, result ->
+            when (call.method) {
+                "isWifi" -> result.success(NetworkMonitor.isWifi(applicationContext))
+                else -> result.notImplemented()
+            }
+        }
+
+        EventChannel(
+            flutterEngine.dartExecutor.binaryMessenger,
+            "grabber/network/status",
+        ).setStreamHandler(
+            object : EventChannel.StreamHandler {
+                private var callback: ConnectivityManager.NetworkCallback? = null
+
+                override fun onListen(arguments: Any?, events: EventChannel.EventSink?) {
+                    events?.success(NetworkMonitor.isWifi(applicationContext))
+                    callback = NetworkMonitor.watch(applicationContext) { wifi ->
+                        main.post { events?.success(wifi) }
+                    }
+                }
+
+                override fun onCancel(arguments: Any?) {
+                    NetworkMonitor.stop(applicationContext, callback)
+                    callback = null
+                }
+            },
+        )
 
         MethodChannel(
             flutterEngine.dartExecutor.binaryMessenger,

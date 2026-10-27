@@ -165,6 +165,12 @@ class Store {
   Future<void> saveAutoDownload(bool enabled) =>
       _write('auto_download', enabled ? '1' : '0');
 
+  /// Holds a queue back while the phone is on mobile data.
+  Future<bool> wifiOnly() async => await _read('wifi_only') == '1';
+
+  Future<void> saveWifiOnly(bool enabled) =>
+      _write('wifi_only', enabled ? '1' : '0');
+
   Future<List<SavedTrack>> history() async {
     final raw = await _read('history');
     if (raw == null || raw.isEmpty) return const <SavedTrack>[];

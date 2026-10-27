@@ -147,6 +147,16 @@ fetched link is only listed, and you press Download. Turn it on and the queue
 starts by itself as soon as a link is fetched — including one that arrives from
 the share sheet — using the format you last picked. The choice is remembered.
 
+## Wi-Fi only
+
+Off by default, next to auto-download in the settings. With it on, no track is
+ever downloaded over mobile data: a queue waits on the list with "Waiting for
+Wi-Fi" until the phone is back on Wi-Fi, and one that loses Wi-Fi between two
+tracks pauses there and carries on by itself. The queue is written to the app's
+store before the wait, so a queue parked for Wi-Fi also survives the app being
+killed. Stop and Cancel release the wait; ethernet counts as Wi-Fi, since a
+docked phone is not on mobile data.
+
 ## Formats
 
 The format sheet shows what each option is for and roughly how big a track gets:

@@ -139,7 +139,8 @@ void main() {
     await tester.pumpAndSettle();
     expect(find.text('Auto-download'), findsOneWidget);
 
-    await tester.tap(find.byType(Switch));
+    // The tile as a whole toggles, and there is more than one switch now.
+    await tester.tap(find.widgetWithText(SwitchListTile, 'Auto-download'));
     await tester.pumpAndSettle();
 
     expect(prefs['auto_download'], '1');

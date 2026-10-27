@@ -9,6 +9,7 @@ import 'audio_format.dart';
 import 'device_downloader.dart';
 import 'history_page.dart';
 import 'models.dart';
+import 'network_status.dart';
 import 'share_intake.dart';
 import 'spotify_meta.dart';
 import 'store.dart';
@@ -19,10 +20,14 @@ class HomePage extends StatefulWidget {
     this.themeMode = ThemeMode.system,
     this.onThemeMode,
     this.resolveLink = resolveSpotifyLink,
+    this.network,
   });
 
   final ThemeMode themeMode;
   final ValueChanged<ThemeMode>? onThemeMode;
+
+  /// Overridable so tests can say whether the phone is on Wi-Fi.
+  final NetworkStatus? network;
 
   /// Overridable so tests can answer with a link instead of the network.
   final Future<ResolvedLink> Function(String link) resolveLink;
@@ -36,6 +41,8 @@ class _HomePageState extends State<HomePage> with WidgetsBindingObserver {
   final DeviceDownloader _downloader = DeviceDownloader();
   final ShareIntake _share = ShareIntake();
   final Store _store = Store();
+  late final NetworkStatus _network = widget.network ?? NetworkStatus();
+  StreamSubscription<bool>? _networkSub;
   StreamSubscription<ShareEvent>? _sharedEvents;
   final Set<String> _selected = <String>{};
 
@@ -53,7 +60,15 @@ class _HomePageState extends State<HomePage> with WidgetsBindingObserver {
   bool _stopRequested = false;
   bool _cancelRequested = false;
   bool _autoDownload = false;
+  bool _wifiOnly = false;
   bool _startWhenVisible = false;
+
+  /// A queue wants to run but the phone is on mobile data, so nothing has
+  /// started yet.
+  bool _waitingForWifi = false;
+
+  /// A running queue is paused between two tracks for the same reason.
+  Completer<void>? _wifiWait;
 
   /// Tracked here as well as in the observer, because the retry below has to
   /// know whether the app is on screen without waiting for a lifecycle event.
@@ -78,6 +93,9 @@ class _HomePageState extends State<HomePage> with WidgetsBindingObserver {
     _prepare();
     _restoreFormat();
     _restoreAutoDownload();
+    _restoreWifiOnly();
+    // An error here (no native side in tests) just means no Wi-Fi events.
+    _networkSub = _network.changes.listen(_onNetworkChanged, onError: (_) {});
     _startUp();
   }
 
@@ -156,9 +174,21 @@ class _HomePageState extends State<HomePage> with WidgetsBindingObserver {
     });
   }
 
+  /// Wi-Fi arriving is what a queue waiting for it was waiting for: start it,
+  /// or let a paused one carry on.
+  void _onNetworkChanged(bool wifi) {
+    if (!wifi || !mounted) return;
+    if (_wifiWait?.isCompleted == false) _wifiWait!.complete();
+    if (!_waitingForWifi || _busy) return;
+    setState(() => _waitingForWifi = false);
+    _downloadSelected();
+  }
+
   @override
   void dispose() {
     _startRetry?.cancel();
+    _networkSub?.cancel();
+    if (_wifiWait?.isCompleted == false) _wifiWait!.complete();
     WidgetsBinding.instance.removeObserver(this);
     _urlController.removeListener(_onUrlChanged);
     _events?.cancel();
@@ -183,6 +213,17 @@ class _HomePageState extends State<HomePage> with WidgetsBindingObserver {
   Future<void> _setAutoDownload(bool enabled) async {
     setState(() => _autoDownload = enabled);
     await _store.saveAutoDownload(enabled);
+  }
+
+  Future<void> _restoreWifiOnly() async {
+    final enabled = await _store.wifiOnly();
+    if (!mounted || enabled == _wifiOnly) return;
+    setState(() => _wifiOnly = enabled);
+  }
+
+  Future<void> _setWifiOnly(bool enabled) async {
+    setState(() => _wifiOnly = enabled);
+    await _store.saveWifiOnly(enabled);
   }
 
   void _onEvent(Map<String, dynamic> event) {
@@ -323,13 +364,29 @@ class _HomePageState extends State<HomePage> with WidgetsBindingObserver {
     }
   }
 
+  /// Waits between two tracks until the phone is back on Wi-Fi. Stop and
+  /// Cancel release it too, so neither leaves the queue parked forever.
+  Future<void> _pauseForWifi() async {
+    final wait = _wifiWait = Completer<void>();
+    if (mounted) setState(() {});
+    try {
+      // The connection may have come back between the check and this line.
+      if (await _network.isWifi() && !wait.isCompleted) wait.complete();
+      await wait.future;
+    } finally {
+      _wifiWait = null;
+      if (mounted) setState(() {});
+    }
+  }
+
   /// The strong one of the two stop controls: it drops the queue and the
   /// stored record, so a killed process cannot bring the rest back on the next
   /// launch, and it returns to the empty screen instead of leaving a list whose
   /// download was abandoned half way.
   void _cancelQueue() {
-    if (!_busy && !_startWhenVisible) return;
+    if (!_busy && !_startWhenVisible && !_waitingForWifi) return;
     _startRetry?.cancel();
+    if (_wifiWait?.isCompleted == false) _wifiWait!.complete();
     // Before anything else: a process killed from here on must not resume.
     _store.clearPendingQueue();
     setState(() {
@@ -345,6 +402,7 @@ class _HomePageState extends State<HomePage> with WidgetsBindingObserver {
       _cancelRequested = false;
       _stopRequested = false;
       _startWhenVisible = false;
+      _waitingForWifi = false;
       _busy = false;
     });
     _clearLink();
@@ -387,6 +445,8 @@ class _HomePageState extends State<HomePage> with WidgetsBindingObserver {
       builder: (context) => _SettingsSheet(
         autoDownload: _autoDownload,
         onAutoDownload: _setAutoDownload,
+        wifiOnly: _wifiOnly,
+        onWifiOnly: _setWifiOnly,
       ),
     );
   }
@@ -453,6 +513,20 @@ class _HomePageState extends State<HomePage> with WidgetsBindingObserver {
       ),
     );
 
+    // Wi-Fi-only: the record is already written, so the queue waits rather
+    // than starting, and the next launch checks the connection again.
+    if (_wifiOnly && !await _network.isWifi()) {
+      if (!mounted) return;
+      setState(() {
+        _busy = false;
+        _waitingForWifi = true;
+        for (final track in tracks) {
+          _states.remove(track.id);
+        }
+      });
+      return;
+    }
+
     var savedCount = 0;
     // Holds the phone awake for the whole queue, so the screen going off or
     // the app moving to the background does not pause it. Android 12+ only
@@ -473,6 +547,12 @@ class _HomePageState extends State<HomePage> with WidgetsBindingObserver {
     try {
       for (final track in tracks) {
         if (_stopRequested) break;
+        // Wi-Fi dropping mid-queue pauses it here, between two files, rather
+        // than finishing the rest over mobile data.
+        if (_wifiOnly && !await _network.isWifi()) {
+          await _pauseForWifi();
+          if (!mounted || _stopRequested) break;
+        }
         setState(() {
           _states[track.id] = 'downloading';
           _progress.remove(track.id);
@@ -615,6 +695,19 @@ class _HomePageState extends State<HomePage> with WidgetsBindingObserver {
               _Notice(
                 icon: Icons.link_off_rounded,
                 message: _shareNotice!,
+              ),
+            ] else if (_waitingForWifi || _wifiWait != null) ...[
+              const SizedBox(height: kSpace12),
+              _Notice(
+                icon: Icons.wifi_off_rounded,
+                message: 'Waiting for Wi-Fi. Nothing is downloaded on mobile '
+                    'data.',
+                action: _busy
+                    ? null
+                    : TextButton(
+                        onPressed: _cancelQueue,
+                        child: const Text('Cancel'),
+                      ),
               ),
             ] else if (_startWhenVisible) ...[
               const SizedBox(height: kSpace12),
@@ -1025,7 +1118,12 @@ class _HomePageState extends State<HomePage> with WidgetsBindingObserver {
               child: OutlinedButton(
                 onPressed: _stopRequested
                     ? null
-                    : () => setState(() => _stopRequested = true),
+                    : () {
+                        setState(() => _stopRequested = true);
+                        if (_wifiWait?.isCompleted == false) {
+                          _wifiWait!.complete();
+                        }
+                      },
                 child: Text(
                   _stopRequested
                       ? 'Finishing this track…'
@@ -1050,10 +1148,14 @@ class _SettingsSheet extends StatefulWidget {
   const _SettingsSheet({
     required this.autoDownload,
     required this.onAutoDownload,
+    required this.wifiOnly,
+    required this.onWifiOnly,
   });
 
   final bool autoDownload;
   final ValueChanged<bool> onAutoDownload;
+  final bool wifiOnly;
+  final ValueChanged<bool> onWifiOnly;
 
   @override
   State<_SettingsSheet> createState() => _SettingsSheetState();
@@ -1061,6 +1163,7 @@ class _SettingsSheet extends StatefulWidget {
 
 class _SettingsSheetState extends State<_SettingsSheet> {
   late bool _autoDownload = widget.autoDownload;
+  late bool _wifiOnly = widget.wifiOnly;
 
   @override
   Widget build(BuildContext context) {
@@ -1085,6 +1188,22 @@ class _SettingsSheetState extends State<_SettingsSheet> {
               title: Text('Auto-download', style: theme.textTheme.bodyLarge),
               subtitle: Text(
                 'Start the queue as soon as a link is fetched or shared.',
+                style: theme.textTheme.bodySmall?.copyWith(
+                  color: theme.colorScheme.onSurfaceVariant,
+                ),
+              ),
+            ),
+            SwitchListTile(
+              contentPadding: EdgeInsets.zero,
+              value: _wifiOnly,
+              onChanged: (value) {
+                setState(() => _wifiOnly = value);
+                widget.onWifiOnly(value);
+              },
+              title: Text('Wi-Fi only', style: theme.textTheme.bodyLarge),
+              subtitle: Text(
+                'Never download on mobile data. A running queue waits for '
+                'Wi-Fi instead.',
                 style: theme.textTheme.bodySmall?.copyWith(
                   color: theme.colorScheme.onSurfaceVariant,
                 ),
