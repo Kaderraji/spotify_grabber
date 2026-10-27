@@ -118,6 +118,10 @@ and Cancel clear that record, so neither comes back later. Swiping the app out
 of recents counts as an interruption, not as a cancel: a half-finished queue
 resumes on the next launch.
 
+The list on screen is kept too, with the tracks that were ticked: kill the app
+or reboot the phone while choosing what to download, and the next launch
+reopens that link without starting anything. Clearing the link forgets it.
+
 The app registers for `ACTION_SEND` of `text/plain`, so it shows up in the
 system share sheet for any text. The shared text is scanned for a track, album
 or playlist link (Spotify usually wraps it in a “song – artist … #Spotify”

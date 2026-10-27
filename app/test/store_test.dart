@@ -159,5 +159,49 @@ void main() {
       values['pending'] = '{"link": 3}';
       expect(await Store().pendingQueue(), isNull);
     });
+
+    test('the link on screen round trips and can be cleared', () async {
+      final store = Store();
+      expect(await store.viewing(), isNull);
+
+      await store.saveViewing(
+        ViewingLink(
+          link: ResolvedLink(
+            url: 'https://open.spotify.com/album/1',
+            kind: 'album',
+            title: 'Discovery',
+            tracks: [
+              Track(
+                id: 'one',
+                title: 'One More Time',
+                artists: 'Daft Punk',
+                duration: 320,
+              ),
+              Track(
+                id: 'two',
+                title: 'Aerodynamic',
+                artists: 'Daft Punk',
+                duration: 210,
+              ),
+            ],
+          ),
+          selected: ['two'],
+        ),
+      );
+
+      final viewing = await store.viewing();
+      expect(viewing, isNotNull);
+      expect(viewing!.link.title, 'Discovery');
+      expect(viewing.link.tracks, hasLength(2));
+      expect(viewing.selected, ['two']);
+
+      await store.clearViewing();
+      expect(await store.viewing(), isNull);
+    });
+
+    test('broken stored JSON reads as no link on screen', () async {
+      values['viewing'] = '{"link": 3}';
+      expect(await Store().viewing(), isNull);
+    });
   });
 }

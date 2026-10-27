@@ -99,11 +99,13 @@ class _HomePageState extends State<HomePage> with WidgetsBindingObserver {
     _startUp();
   }
 
-  /// A share that opened the app gets first say; with none, a queue left over
-  /// from the last run carries on where it stopped.
+  /// A share that opened the app gets first say; then a queue left over from
+  /// the last run carries on where it stopped; with neither, the list that was
+  /// on screen comes back without starting anything.
   Future<void> _startUp() async {
     await _takeLaunchShare();
     await _restorePendingQueue();
+    await _restoreViewing();
   }
 
   /// Only the clear button depends on the text, so rebuild on that one flip.
@@ -312,6 +314,42 @@ class _HomePageState extends State<HomePage> with WidgetsBindingObserver {
     await _downloadSelected();
   }
 
+  /// The list from the last run, with the ticks it had. Nothing downloads:
+  /// the user only gets their selection back.
+  Future<void> _restoreViewing() async {
+    if (_link != null || _resolving || _busy) return;
+    final viewing = await _store.viewing();
+    if (!mounted || viewing == null) return;
+    // The link may have resolved while this was reading the store.
+    if (_link != null || _resolving || _busy) return;
+
+    final tracks = viewing.link.tracks;
+    if (tracks.isEmpty) {
+      await _store.clearViewing();
+      return;
+    }
+    final ids = tracks.map((track) => track.id).toSet();
+    final selected = viewing.selected.where(ids.contains).toSet();
+    setState(() {
+      _link = viewing.link;
+      _selected
+        ..clear()
+        ..addAll(selected.isEmpty ? ids : selected);
+    });
+    _urlController.text = viewing.link.url;
+  }
+
+  /// Keeps the restore point in step with what is on screen.
+  void _rememberViewing() {
+    final link = _link;
+    if (link == null) return;
+    unawaited(
+      _store.saveViewing(
+        ViewingLink(link: link, selected: _selected.toList()),
+      ),
+    );
+  }
+
   Future<void> _pasteFromClipboard() async {
     final data = await Clipboard.getData(Clipboard.kTextPlain);
     final text = data?.text?.trim();
@@ -354,6 +392,7 @@ class _HomePageState extends State<HomePage> with WidgetsBindingObserver {
         _selected.addAll(link.tracks.map((track) => track.id));
         _resolving = false;
       });
+      _rememberViewing();
       if (_autoDownload) await _downloadSelected();
     } catch (error) {
       if (!mounted) return;
@@ -413,6 +452,7 @@ class _HomePageState extends State<HomePage> with WidgetsBindingObserver {
 
   void _clearLink() {
     _store.clearPendingQueue();
+    _store.clearViewing();
     _urlController.clear();
     setState(() {
       _link = null;
@@ -752,6 +792,7 @@ class _HomePageState extends State<HomePage> with WidgetsBindingObserver {
                         _selected.remove(tracks[i].id);
                       }
                     });
+                    _rememberViewing();
                   },
                 ),
               ],
@@ -1006,13 +1047,16 @@ class _HomePageState extends State<HomePage> with WidgetsBindingObserver {
         TextButton(
           onPressed: _busy
               ? null
-              : () => setState(() {
+              : () {
+                  setState(() {
                     if (allSelected) {
                       _selected.clear();
                     } else {
                       _selected.addAll(tracks.map((track) => track.id));
                     }
-                  }),
+                  });
+                  _rememberViewing();
+                },
           style: TextButton.styleFrom(
             visualDensity: VisualDensity.compact,
             minimumSize: const Size(0, 32),

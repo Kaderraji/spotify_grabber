@@ -86,6 +86,33 @@ class PendingQueue {
   }
 }
 
+/// The link that was on screen the last time the app was alive, with the
+/// tracks that were ticked. It is not downloading anything — that is what
+/// [PendingQueue] is for — it only saves the user from pasting the link again
+/// after Android killed the app while they were choosing tracks.
+class ViewingLink {
+  ViewingLink({required this.link, required this.selected});
+
+  final ResolvedLink link;
+  final List<String> selected;
+
+  Map<String, dynamic> toJson() => {
+        'link': link.toJson(),
+        'selected': selected,
+      };
+
+  factory ViewingLink.fromJson(Map<String, dynamic> json) {
+    return ViewingLink(
+      link: ResolvedLink.fromJson(
+        Map<String, dynamic>.from(json['link'] as Map? ?? const {}),
+      ),
+      selected: (json['selected'] as List<dynamic>? ?? const [])
+          .map((id) => id as String)
+          .toList(),
+    );
+  }
+}
+
 /// "11.5 MB" / "820 KB" — sizes people can compare at a glance.
 String formatBytes(int bytes) {
   if (bytes <= 0) return '—';
@@ -198,6 +225,24 @@ class Store {
   }
 
   Future<void> clearHistory() => _write('history', '[]');
+
+  /// The link that was on the screen last time, to reopen on a cold launch.
+  Future<ViewingLink?> viewing() async {
+    final raw = await _read('viewing');
+    if (raw == null || raw.isEmpty) return null;
+    try {
+      return ViewingLink.fromJson(jsonDecode(raw) as Map<String, dynamic>);
+    } on FormatException {
+      return null;
+    } on TypeError {
+      return null;
+    }
+  }
+
+  Future<void> saveViewing(ViewingLink viewing) =>
+      _write('viewing', jsonEncode(viewing.toJson()));
+
+  Future<void> clearViewing() => _write('viewing', '');
 
   /// The queue that was still running the last time the app was alive.
   Future<PendingQueue?> pendingQueue() async {
