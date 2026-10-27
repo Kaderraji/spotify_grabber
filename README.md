@@ -18,11 +18,21 @@ The details that make this work:
   library (2025.x) and YouTube refuses it. On startup the app updates yt-dlp to
   the nightly channel and afterwards re-checks every 30 days. The first launch
   needs a network connection for that.
-- **No Deno needed.** On a PC, yt-dlp wants Deno for YouTube's JS challenge; on
-  Android there is no Deno build. yt-dlp falls back to its built-in quickjs
-  runtime, which is enough for the audio formats used here.
+- **The visionos client is asked first, and that is what makes downloads
+  start quickly.** YouTube signs the URLs its web clients hand out, and yt-dlp
+  has to solve a JavaScript challenge before it can use them. The only JS
+  runtime that exists on a phone is quickjs, and on this hardware that solve
+  takes **about 33 seconds per video** — measured, not guessed — which was the
+  wait between tapping Download and the first byte of audio. The `visionos`
+  client returns the same audio formats (itag 140) with URLs that need no
+  solving at all, so the queue tries it first and only falls back to the
+  default clients — which still work, just slowly — when it finds nothing.
+  Measured on the same track: tap to first byte **51.8 s → 18.4 s**, whole
+  download **68.3 s → 25.0 s**.
 - **Search is duration-filtered.** When the Spotify track length is known, the
-  top five YouTube results are searched and the first one within ±20 s is kept,
+  top five YouTube results are searched and the first one within ±20 s is kept
+  (yt-dlp applies the filter from the search page's own metadata, so only the
+  matching candidate is ever extracted),
   which drops sped-up, slowed and cover versions — and skips the music video
   that runs a minute longer than the song. Only if none of the five fits does
   the download retry without the filter. A rejected candidate exits cleanly

@@ -59,14 +59,29 @@ class OnDeviceDownloader(private val context: Context) {
         format: String,
         onProgress: (Float) -> Unit,
     ): SavedFile {
+        val tCall = System.currentTimeMillis()
         initEngines()
+        val tEngines = System.currentTimeMillis()
         val spec = AudioSpec.of(format)
 
         val workDir = File(context.cacheDir, "downloads").apply { mkdirs() }
         workDir.listFiles { file -> file.name.startsWith(baseName) }?.forEach { it.delete() }
 
-        fun run(search: String, filtered: Boolean): YoutubeDLResponse {
-            val request = YoutubeDLRequest("$search:$query")
+        var runStart = 0L
+        var firstProgress = 0L
+
+        /**
+         * One yt-dlp run for [target], a search or a video URL. [client]
+         * picks YouTube's player client; [matchFilter] compares the duration of
+         * every candidate with Spotify's length, which keeps covers and
+         * sped-up versions out.
+         */
+        fun run(target: String, client: String?, matchFilter: Boolean = false): YoutubeDLResponse {
+            runStart = System.currentTimeMillis()
+            val request = YoutubeDLRequest(target)
+            if (client != null) {
+                request.addOption("--extractor-args", "youtube:player_client=$client")
+            }
             request.addOption("-x")
             request.addOption("--audio-format", spec.container)
             request.addOption("--audio-quality", spec.quality)
@@ -89,7 +104,7 @@ class OnDeviceDownloader(private val context: Context) {
             request.addOption("--embed-thumbnail")
             request.addOption("--convert-thumbnails", "jpg")
             request.addOption("-o", File(workDir, "$baseName.%(ext)s").absolutePath)
-            if (filtered && durationSec > 30) {
+            if (matchFilter && durationSec > 30) {
                 request.addOption(
                     "--match-filter",
                     "duration > ${durationSec - 20} & duration < ${durationSec + 20}",
@@ -98,9 +113,20 @@ class OnDeviceDownloader(private val context: Context) {
                 // The top hit is often the music video, which runs long.
                 request.addOption("--max-downloads", "1")
             }
-            return YoutubeDL.getInstance().execute(request, null) { progress, _, _ ->
-                if (progress >= 0f) onProgress(progress)
+            val response = YoutubeDL.getInstance().execute(request, null) { progress, _, _ ->
+                if (progress >= 0f) {
+                    if (firstProgress == 0L) {
+                        firstProgress = System.currentTimeMillis()
+                        Log.i(
+                            TIMING_TAG,
+                            "$target: first bytes ${firstProgress - runStart}ms after starting yt-dlp",
+                        )
+                    }
+                    onProgress(progress)
+                }
             }
+            Log.i(TIMING_TAG, "$target: done in ${System.currentTimeMillis() - runStart}ms")
+            return response
         }
 
         fun produced(): File? = workDir.listFiles { file -> file.name.startsWith(baseName) }
@@ -109,19 +135,56 @@ class OnDeviceDownloader(private val context: Context) {
 
         // A rejected candidate is not an error: yt-dlp exits cleanly having
         // saved nothing, so look for the file rather than for an exception.
+        val tBeforeSearch = System.currentTimeMillis()
         var file: File? = null
+
+        // Fast path, and the one that matters: YouTube signs the URLs its web
+        // clients hand out, and yt-dlp then has to solve a JavaScript challenge
+        // to use them. The only JS runtime that exists on a phone is quickjs,
+        // which spends about half a minute on that solve — that is the wait
+        // before a download starts. The visionos client returns the same audio
+        // formats with URLs that need no solving at all.
         if (durationSec > 30) {
             try {
-                run("ytsearch5", filtered = true)
+                run("ytsearch5:$query", client = FAST_CLIENT, matchFilter = true)
             } catch (error: Exception) {
-                Log.i(TAG, "no result inside the duration window for $query", error)
+                // yt-dlp reports a failure for a whole run even when the track
+                // came out of it, so the file decides, not the exception.
+                Log.i(TAG, "$FAST_CLIENT run for $query ended early", error)
             }
             file = produced()
         }
-        if (file == null) {
-            run("ytsearch1", filtered = false)
+        val tSearch = System.currentTimeMillis()
+
+        // Nothing found, or nothing to filter by: fall back to the default
+        // clients, which work everywhere but pay for the challenge solve.
+        if (file == null && durationSec > 30) {
+            try {
+                run("ytsearch5:$query", client = null, matchFilter = true)
+            } catch (error: Exception) {
+                Log.i(TAG, "filtered search for $query ended early", error)
+            }
             file = produced()
         }
+        val tFallback = System.currentTimeMillis()
+        // Short tracks and links without a length skip the filter above, but
+        // they still deserve the client that does not need a challenge solve.
+        if (file == null) {
+            try {
+                run("ytsearch1:$query", client = FAST_CLIENT)
+            } catch (error: Exception) {
+                Log.i(TAG, "$FAST_CLIENT run for $query ended early", error)
+            }
+            file = produced()
+        }
+        val tFastPlain = System.currentTimeMillis()
+        if (file == null) {
+            // The last attempt is not caught: its message is what the user sees
+            // under the track.
+            run("ytsearch1:$query", client = null)
+            file = produced()
+        }
+        val tLastResort = System.currentTimeMillis()
 
         val produced = file ?: throw IllegalStateException("No audio found for \"$query\".")
 
@@ -134,6 +197,13 @@ class OnDeviceDownloader(private val context: Context) {
             mimeType = spec.mimeType(extension),
         )
         produced.delete()
+        Log.i(
+            TIMING_TAG,
+            "engines=${tEngines - tCall}ms pick=${tSearch - tBeforeSearch}ms " +
+                "filtered=${tFallback - tSearch}ms plain=${tFastPlain - tFallback}ms " +
+                "slowPlain=${tLastResort - tFastPlain}ms " +
+                "publish=${System.currentTimeMillis() - tLastResort}ms",
+        )
         return saved
     }
 
@@ -290,6 +360,13 @@ class OnDeviceDownloader(private val context: Context) {
 
     private companion object {
         const val TAG = "GRABBER_DEVICE"
+        const val TIMING_TAG = "GRABBER_TIME"
         const val FOLDER = "SpotifyGrabber"
+
+        /**
+         * YouTube client whose audio URLs need no JavaScript challenge, so no
+         * slow quickjs solve before the download can start.
+         */
+        const val FAST_CLIENT = "visionos"
     }
 }

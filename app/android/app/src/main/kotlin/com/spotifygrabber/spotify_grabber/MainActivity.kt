@@ -8,6 +8,7 @@ import android.net.Uri
 import android.os.Build
 import android.os.Handler
 import android.os.Looper
+import android.util.Log
 import io.flutter.embedding.android.FlutterActivity
 import io.flutter.embedding.engine.FlutterEngine
 import io.flutter.plugin.common.EventChannel
@@ -203,6 +204,8 @@ class MainActivity : FlutterActivity() {
                     val label = listOf(artist, title).filter { it.isNotBlank() }.joinToString(" - ")
                     notifiedPercent = -1
                     DownloadService.update(applicationContext, position, total, label, 0)
+                    val tReceived = System.currentTimeMillis()
+                    Log.i("GRABBER_TIME", "download call received: $label")
                     worker.execute {
                         try {
                             val file = downloader.download(
@@ -233,6 +236,10 @@ class MainActivity : FlutterActivity() {
                                 }
                             }
                             main.post {
+                                Log.i(
+                                    "GRABBER_TIME",
+                                    "download finished in ${System.currentTimeMillis() - tReceived}ms",
+                                )
                                 result.success(
                                     mapOf("path" to file.path, "size" to file.size),
                                 )
