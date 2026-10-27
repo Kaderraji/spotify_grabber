@@ -63,6 +63,20 @@ The APK is arm64 only: `ndk { abiFilters }` in `app/android/app/build.gradle.kts
 drops the three other ABIs that yt-dlp, ffmpeg and deno ship, which takes it from
 ~207 MB to ~62 MB. Remove that filter to build for an x86 emulator.
 
+## Release shrinking
+
+Release APKs are shrunk by R8, and yt-dlp's bundle is unpacked with
+commons-compress: its extra-field registry builds every class reflectively with
+`Class.newInstance()`, so nothing calls those constructors directly. R8 removed
+them, the registry threw `is not a concrete class` on the first zip, and every
+*fresh* install of a release build died at startup — while the same build
+worked when installed over the debug build that had already unpacked the bundle.
+`app/android/app/proguard-rules.pro` keeps that package for that reason.
+
+A consequence worth remembering: release builds have to be tested with
+`adb uninstall` first. Installing over the previous build hides anything that
+only happens on a clean install.
+
 ## Signing
 
 Release builds are signed with the project's own key, which stays out of git:

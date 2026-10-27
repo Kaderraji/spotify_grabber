@@ -69,6 +69,9 @@ android {
             } else {
                 signingConfigs.getByName("debug")
             }
+            // Flutter's own rules come from the plugin; this adds the ones the
+            // bundled yt-dlp/zip code needs to survive shrinking.
+            proguardFiles("proguard-rules.pro")
         }
     }
 
