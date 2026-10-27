@@ -63,6 +63,23 @@ The APK is arm64 only: `ndk { abiFilters }` in `app/android/app/build.gradle.kts
 drops the three other ABIs that yt-dlp, ffmpeg and deno ship, which takes it from
 ~207 MB to ~62 MB. Remove that filter to build for an x86 emulator.
 
+## Signing
+
+Release builds are signed with the project's own key, which stays out of git:
+
+- `app/android/upload-keystore.jks` — the key
+- `app/android/key.properties` — its passwords and alias
+
+Keep both. Android only installs an update over an app signed with the same
+key, so losing them means uninstalling before a new build can be installed.
+`app/android/app/build.gradle.kts` reads them when present and falls back to
+the debug key otherwise, so a fresh clone still builds and runs.
+
+The app id stays `com.spotifygrabber.spotify_grabber` even though it is the
+Flutter template's shape: Android treats a different id as a different app, so
+renaming it would leave the installed one — with its preferences and saved
+track history — behind.
+
 Gradle downloads the Flutter engine jars from `storage.googleapis.com`. If that
 host is blocked the build hangs at `Running Gradle task 'assembleDebug'...`;
 the jars are already in `$FLUTTER_ROOT/bin/cache/artifacts/engine/*/flutter.jar`,
