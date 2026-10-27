@@ -106,7 +106,9 @@ unlocked (and "Install via USB" enabled in Developer options).
    the list after asking; the audio files are not touched.
 
 Failures show the reason under the track (usually "No audio found for ..." when
-YouTube has no close-duration match).
+YouTube has no close-duration match). Once the queue has ended, `Retry 1 failed
+track` in the bottom bar runs just the tracks that failed — the ones that
+already saved are not downloaded again.
 
 A queue that Android interrupts — the process is killed, the phone reboots, or
 the foreground service was refused and the app closed before it could retry —

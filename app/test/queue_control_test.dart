@@ -23,6 +23,9 @@ void main() {
   /// running while the test taps a button.
   Completer<void>? gate;
 
+  /// A query whose download is answered with an error, like "No audio found".
+  String? failing;
+
   const playlist = 'https://open.spotify.com/playlist/37i9dQZF1DXcBWIGoYBM5M';
 
   Future<ResolvedLink> fakeResolve(String url) async => ResolvedLink(
@@ -53,14 +56,22 @@ void main() {
     launchShare = playlist;
     serviceAllowed = true;
     gate = null;
+    failing = null;
     messenger
       ..setMockMethodCallHandler(
         const MethodChannel('grabber/on_device'),
         (call) async {
           if (call.method == 'download') {
-            downloadQueries.add((call.arguments as Map)['query'] as String);
+            final query = (call.arguments as Map)['query'] as String;
+            downloadQueries.add(query);
             final waiting = gate;
             if (waiting != null) await waiting.future;
+            if (query == failing) {
+              throw PlatformException(
+                code: 'download_failed',
+                message: 'No audio found for "$query".',
+              );
+            }
             return {'path': 'Music/SpotifyGrabber/song.m4a', 'size': 1024};
           }
           if (call.method == 'startQueue' && !serviceAllowed) {
@@ -169,6 +180,33 @@ void main() {
     await pumpSteps(tester);
     expect(downloadQueries, isEmpty);
     expect(prefs['pending'], '');
+  });
+
+  testWidgets('retry offers only the tracks that failed', (tester) async {
+    failing = 'Daft Punk - Aerodynamic';
+    await pumpHome(tester);
+    await tester.pumpAndSettle();
+
+    expect(
+      downloadQueries,
+      ['Daft Punk - One More Time', 'Daft Punk - Aerodynamic'],
+    );
+    final retry = find.widgetWithText(TextButton, 'Retry 1 failed track');
+    expect(retry, findsOneWidget);
+
+    failing = null;
+    await tester.tap(retry);
+    await tester.pumpAndSettle();
+
+    // The track that already saved is not downloaded a second time.
+    expect(downloadQueries, [
+      'Daft Punk - One More Time',
+      'Daft Punk - Aerodynamic',
+      'Daft Punk - Aerodynamic',
+    ]);
+    expect(find.byTooltip('Saved tracks'), findsOneWidget);
+    expect(find.text('Retry 1 failed track'), findsNothing);
+    expect(prefs['history'], contains('Aerodynamic'));
   });
 
   testWidgets('stop after this track keeps the list and never resumes',

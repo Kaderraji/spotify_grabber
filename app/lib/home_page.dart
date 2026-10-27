@@ -397,6 +397,23 @@ class _HomePageState extends State<HomePage> with WidgetsBindingObserver {
     );
   }
 
+  /// Tracks whose download ended in an error, in playlist order. They are what
+  /// a second attempt is for; the ones that already saved are left alone.
+  List<Track> get _failedTracks => (_link?.tracks ?? const <Track>[])
+      .where((track) => _states[track.id] == 'failed')
+      .toList(growable: false);
+
+  void _retryFailed() {
+    final failed = _failedTracks;
+    if (failed.isEmpty || _busy) return;
+    setState(() {
+      _selected
+        ..clear()
+        ..addAll(failed.map((track) => track.id));
+    });
+    _downloadSelected();
+  }
+
   Future<void> _downloadSelected({int attempt = 0}) async {
     final link = _link;
     if (link == null || _selected.isEmpty || _busy) return;
@@ -917,6 +934,7 @@ class _HomePageState extends State<HomePage> with WidgetsBindingObserver {
     final canDownload =
         !_busy && !_resolving && _selected.isNotEmpty && _ready != false;
     final count = _selected.length;
+    final failed = _failedTracks;
 
     return DecoratedBox(
       decoration: BoxDecoration(
@@ -936,17 +954,36 @@ class _HomePageState extends State<HomePage> with WidgetsBindingObserver {
           ),
           child: _busy
               ? _progressBar(theme)
-              : SizedBox(
-                  width: double.infinity,
-                  child: FilledButton(
-                    onPressed: canDownload ? _downloadSelected : null,
-                    child: Text(
-                      count == 0
-                          ? 'Select a track to download'
-                          : 'Download $count track${count == 1 ? '' : 's'} · '
-                              '${_format.shortLabel}',
+              : Column(
+                  mainAxisSize: MainAxisSize.min,
+                  children: [
+                    SizedBox(
+                      width: double.infinity,
+                      child: FilledButton(
+                        onPressed: canDownload ? _downloadSelected : null,
+                        child: Text(
+                          count == 0
+                              ? 'Select a track to download'
+                              : 'Download $count track${count == 1 ? '' : 's'} · '
+                                  '${_format.shortLabel}',
+                        ),
+                      ),
                     ),
-                  ),
+                    if (failed.isNotEmpty) ...[
+                      const SizedBox(height: kSpace4),
+                      TextButton(
+                        onPressed: _resolving ? null : _retryFailed,
+                        style: TextButton.styleFrom(
+                          visualDensity: VisualDensity.compact,
+                          minimumSize: const Size(0, 32),
+                        ),
+                        child: Text(
+                          'Retry ${failed.length} failed '
+                          'track${failed.length == 1 ? '' : 's'}',
+                        ),
+                      ),
+                    ],
+                  ],
                 ),
         ),
       ),
