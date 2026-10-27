@@ -200,6 +200,16 @@ to 12 MB. Only when no such source exists does ffmpeg encode — 256K for AAC,
 192K for MP3. Cover art and tags are embedded for every option. The choice is
 stored in the app's preferences, so it survives restarts.
 
+## Updates
+
+Settings shows the installed version and has **Check for updates**: it asks
+GitHub for the newest release of `Kaderraji/spotify_grabber`, compares the tag
+with the installed version, and when it is newer offers the release's APK in
+the browser. That needs the repository to be public (the app carries no token)
+and published releases: a tag such as `v1.1.0` with the signed APK as an
+asset. When nothing is published GitHub answers 404 and the sheet says so; the
+APK it downloads has to be signed with the same key as the installed app.
+
 ## Tests
 
 ```bash

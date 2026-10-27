@@ -4,6 +4,7 @@ import 'dart:math' as math;
 import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
 
+import 'app_info.dart';
 import 'app_theme.dart';
 import 'audio_format.dart';
 import 'device_downloader.dart';
@@ -13,6 +14,7 @@ import 'network_status.dart';
 import 'share_intake.dart';
 import 'spotify_meta.dart';
 import 'store.dart';
+import 'update_check.dart';
 
 class HomePage extends StatefulWidget {
   const HomePage({
@@ -21,6 +23,8 @@ class HomePage extends StatefulWidget {
     this.onThemeMode,
     this.resolveLink = resolveSpotifyLink,
     this.network,
+    this.appInfo,
+    this.updates,
   });
 
   final ThemeMode themeMode;
@@ -28,6 +32,10 @@ class HomePage extends StatefulWidget {
 
   /// Overridable so tests can say whether the phone is on Wi-Fi.
   final NetworkStatus? network;
+
+  /// Overridable so tests do not need Android, or GitHub, for the version line.
+  final AppInfo? appInfo;
+  final UpdateService? updates;
 
   /// Overridable so tests can answer with a link instead of the network.
   final Future<ResolvedLink> Function(String link) resolveLink;
@@ -42,6 +50,8 @@ class _HomePageState extends State<HomePage> with WidgetsBindingObserver {
   final ShareIntake _share = ShareIntake();
   final Store _store = Store();
   late final NetworkStatus _network = widget.network ?? NetworkStatus();
+  late final AppInfo _appInfo = widget.appInfo ?? const AppInfo();
+  late final UpdateService _updates = widget.updates ?? UpdateService();
   StreamSubscription<bool>? _networkSub;
   StreamSubscription<ShareEvent>? _sharedEvents;
   final Set<String> _selected = <String>{};
@@ -487,6 +497,9 @@ class _HomePageState extends State<HomePage> with WidgetsBindingObserver {
         onAutoDownload: _setAutoDownload,
         wifiOnly: _wifiOnly,
         onWifiOnly: _setWifiOnly,
+        version: _appInfo.version,
+        fetchLatest: _updates.latest,
+        openUrl: _appInfo.openUrl,
       ),
     );
   }
@@ -1194,12 +1207,18 @@ class _SettingsSheet extends StatefulWidget {
     required this.onAutoDownload,
     required this.wifiOnly,
     required this.onWifiOnly,
+    required this.version,
+    required this.fetchLatest,
+    required this.openUrl,
   });
 
   final bool autoDownload;
   final ValueChanged<bool> onAutoDownload;
   final bool wifiOnly;
   final ValueChanged<bool> onWifiOnly;
+  final Future<AppVersion> Function() version;
+  final Future<Update?> Function() fetchLatest;
+  final Future<bool> Function(String url) openUrl;
 
   @override
   State<_SettingsSheet> createState() => _SettingsSheetState();
@@ -1208,13 +1227,69 @@ class _SettingsSheet extends StatefulWidget {
 class _SettingsSheetState extends State<_SettingsSheet> {
   late bool _autoDownload = widget.autoDownload;
   late bool _wifiOnly = widget.wifiOnly;
+  AppVersion? _version;
+  bool _checking = false;
+  Update? _update;
+  String? _updateMessage;
+
+  @override
+  void initState() {
+    super.initState();
+    _loadVersion();
+  }
+
+  Future<void> _loadVersion() async {
+    final version = await widget.version();
+    if (!mounted) return;
+    setState(() => _version = version);
+  }
+
+  /// Asks GitHub for the newest release and compares it with what is installed.
+  Future<void> _check() async {
+    setState(() {
+      _checking = true;
+      _update = null;
+      _updateMessage = null;
+    });
+    try {
+      final latest = await widget.fetchLatest();
+      if (!mounted) return;
+      if (latest == null) {
+        setState(() {
+          _checking = false;
+          _updateMessage = 'No release to compare with yet.';
+        });
+        return;
+      }
+      final installed = _version ?? await widget.version();
+      if (!mounted) return;
+      final newer = isNewerVersion(latest.version, installed.name);
+      setState(() {
+        _checking = false;
+        _version = installed;
+        if (newer) {
+          _update = latest;
+        } else {
+          _updateMessage = 'You are on the latest version.';
+        }
+      });
+    } catch (error) {
+      if (!mounted) return;
+      setState(() {
+        _checking = false;
+        _updateMessage = error.toString();
+      });
+    }
+  }
 
   @override
   Widget build(BuildContext context) {
     final theme = Theme.of(context);
     return SafeArea(
       top: false,
-      child: Padding(
+      // Scrollable: on a short screen, or with large text, the version and
+      // update rows do not fit under the switches.
+      child: SingleChildScrollView(
         padding: const EdgeInsets.fromLTRB(kSpace16, 0, kSpace16, kSpace16),
         child: Column(
           mainAxisSize: MainAxisSize.min,
@@ -1253,6 +1328,54 @@ class _SettingsSheetState extends State<_SettingsSheet> {
                 ),
               ),
             ),
+            const Divider(height: kSpace32),
+            Row(
+              children: [
+                Expanded(
+                  child: Text(
+                    'Version ${_version?.label ?? '…'}',
+                    style: theme.textTheme.bodySmall?.copyWith(
+                      color: theme.colorScheme.onSurfaceVariant,
+                    ),
+                  ),
+                ),
+                TextButton(
+                  onPressed: _checking ? null : _check,
+                  style: TextButton.styleFrom(
+                    visualDensity: VisualDensity.compact,
+                    minimumSize: const Size(0, 32),
+                  ),
+                  child: Text(
+                    _checking ? 'Checking…' : 'Check for updates',
+                  ),
+                ),
+              ],
+            ),
+            if (_update != null) ...[
+              const SizedBox(height: kSpace8),
+              Row(
+                children: [
+                  Expanded(
+                    child: Text(
+                      'Version ${_update!.version} is available.',
+                      style: theme.textTheme.bodySmall,
+                    ),
+                  ),
+                  FilledButton.tonal(
+                    onPressed: () => widget.openUrl(_update!.url),
+                    child: const Text('Get it'),
+                  ),
+                ],
+              ),
+            ] else if (_updateMessage != null) ...[
+              const SizedBox(height: kSpace8),
+              Text(
+                _updateMessage!,
+                style: theme.textTheme.bodySmall?.copyWith(
+                  color: theme.colorScheme.onSurfaceVariant,
+                ),
+              ),
+            ],
           ],
         ),
       ),

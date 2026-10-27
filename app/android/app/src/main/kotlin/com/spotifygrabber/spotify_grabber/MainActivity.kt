@@ -4,6 +4,7 @@ import android.Manifest
 import android.content.Intent
 import android.content.pm.PackageManager
 import android.net.ConnectivityManager
+import android.net.Uri
 import android.os.Build
 import android.os.Handler
 import android.os.Looper
@@ -98,6 +99,37 @@ class MainActivity : FlutterActivity() {
                     } else {
                         prefs.edit().putString("store.$key", value).apply()
                         result.success(null)
+                    }
+                }
+
+                else -> result.notImplemented()
+            }
+        }
+
+        // The installed version, shown in Settings, and the browser hand-off
+        // the update check needs when a newer release exists.
+        MethodChannel(
+            flutterEngine.dartExecutor.binaryMessenger,
+            "grabber/app",
+        ).setMethodCallHandler { call, result ->
+            when (call.method) {
+                "version" -> {
+                    val info = packageManager.getPackageInfo(packageName, 0)
+                    @Suppress("DEPRECATION")
+                    val code = if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.P) {
+                        info.longVersionCode.toInt()
+                    } else {
+                        info.versionCode
+                    }
+                    result.success(mapOf("name" to info.versionName, "code" to code))
+                }
+
+                "openUrl" -> {
+                    val url = call.argument<String>("url")
+                    if (url == null) {
+                        result.error("bad_args", "url is required", null)
+                    } else {
+                        result.success(openInBrowser(url))
                     }
                 }
 
@@ -239,6 +271,17 @@ class MainActivity : FlutterActivity() {
                 else -> result.notImplemented()
             }
         }
+    }
+
+    /** Opens a link outside the app; false when the phone has no browser. */
+    private fun openInBrowser(url: String): Boolean = try {
+        startActivity(
+            Intent(Intent.ACTION_VIEW, Uri.parse(url))
+                .addFlags(Intent.FLAG_ACTIVITY_NEW_TASK),
+        )
+        true
+    } catch (error: Exception) {
+        false
     }
 
     /** Android 13+ hides the download notification without this permission. */
