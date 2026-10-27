@@ -90,12 +90,14 @@ unlocked (and "Install via USB" enabled in Developer options).
    don't want, or use *Select all* / *Clear*.
 3. Pick a **format** (see below). The choice is remembered.
 4. **Download** — tracks are downloaded one after another with a live
-   percentage. `Stop after this track` ends the queue after the current file.
-   The queue keeps running with the screen off or the app in the background: a
-   foreground service holds a wake lock and shows the current track in a
-   notification, so Android does not freeze the app or let the CPU sleep
-   mid-track. When the queue ends it leaves a "Saved N tracks" notification;
-   swiping the app out of recents stops everything.
+   percentage. `Stop after this track` ends the queue once the file in flight
+   is done and keeps the list, so the rest is still ticked if you come back to
+   it; `Cancel` abandons the queue and its stored record and returns to the
+   start screen. The queue keeps running with the screen off or the app in the
+   background: a foreground service holds a wake lock and shows the current
+   track in a notification, so Android does not freeze the app or let the CPU
+   sleep mid-track. When the queue ends it leaves a "Saved N tracks"
+   notification.
 5. Files land in `Music/SpotifyGrabber/<artist> - <title>.<ext>`, indexed by the
    system so any music player sees them. Re-downloading a song replaces the old
    file — including when the format changed — instead of adding a second copy.
@@ -105,6 +107,14 @@ unlocked (and "Install via USB" enabled in Developer options).
 
 Failures show the reason under the track (usually "No audio found for ..." when
 YouTube has no close-duration match).
+
+A queue that Android interrupts — the process is killed, the phone reboots, or
+the foreground service was refused and the app closed before it could retry —
+is written to the app's store before it starts and after every track, so the
+next launch restores the link and downloads only what is still missing. Stop
+and Cancel clear that record, so neither comes back later. Swiping the app out
+of recents counts as an interruption, not as a cancel: a half-finished queue
+resumes on the next launch.
 
 The app registers for `ACTION_SEND` of `text/plain`, so it shows up in the
 system share sheet for any text. The shared text is scanned for a track, album

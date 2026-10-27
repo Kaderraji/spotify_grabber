@@ -51,6 +51,7 @@ class _HomePageState extends State<HomePage> with WidgetsBindingObserver {
   bool _resolving = false;
   bool _busy = false;
   bool _stopRequested = false;
+  bool _cancelRequested = false;
   bool _autoDownload = false;
   bool _startWhenVisible = false;
 
@@ -322,6 +323,36 @@ class _HomePageState extends State<HomePage> with WidgetsBindingObserver {
     }
   }
 
+  /// The strong one of the two stop controls: it drops the queue and the
+  /// stored record, so a killed process cannot bring the rest back on the next
+  /// launch, and it returns to the empty screen instead of leaving a list whose
+  /// download was abandoned half way.
+  void _cancelQueue() {
+    if (!_busy && !_startWhenVisible) return;
+    _startRetry?.cancel();
+    // Before anything else: a process killed from here on must not resume.
+    _store.clearPendingQueue();
+    setState(() {
+      _cancelRequested = true;
+      _stopRequested = true;
+    });
+    // Nothing is downloading yet, so there is no queue to wind down first.
+    if (!_busy) _abandonQueue();
+  }
+
+  void _abandonQueue() {
+    setState(() {
+      _cancelRequested = false;
+      _stopRequested = false;
+      _startWhenVisible = false;
+      _busy = false;
+    });
+    _clearLink();
+    ScaffoldMessenger.of(context).showSnackBar(
+      const SnackBar(content: Text('Download cancelled.')),
+    );
+  }
+
   void _clearLink() {
     _store.clearPendingQueue();
     _urlController.clear();
@@ -382,6 +413,7 @@ class _HomePageState extends State<HomePage> with WidgetsBindingObserver {
     setState(() {
       _busy = true;
       _stopRequested = false;
+      _cancelRequested = false;
       _startWhenVisible = false;
       _error = null;
       _busyDone = 0;
@@ -463,13 +495,17 @@ class _HomePageState extends State<HomePage> with WidgetsBindingObserver {
         if (!mounted) return;
         setState(() => _busyDone++);
         remaining.remove(track.id);
-        await _store.savePendingQueue(
-          PendingQueue(
-            link: link,
-            remaining: List<String>.of(remaining),
-            format: _format.id,
-          ),
-        );
+        // A cancelled queue is not written down again: the next launch has
+        // nothing to pick up.
+        if (!_cancelRequested) {
+          await _store.savePendingQueue(
+            PendingQueue(
+              link: link,
+              remaining: List<String>.of(remaining),
+              format: _format.id,
+            ),
+          );
+        }
       }
     } finally {
       await _downloader.stopQueue(savedCount);
@@ -479,6 +515,10 @@ class _HomePageState extends State<HomePage> with WidgetsBindingObserver {
     }
 
     if (!mounted) return;
+    if (_cancelRequested) {
+      _abandonQueue();
+      return;
+    }
     final failed =
         tracks.where((track) => _states[track.id] == 'failed').length;
     setState(() => _busy = false);
@@ -564,6 +604,10 @@ class _HomePageState extends State<HomePage> with WidgetsBindingObserver {
               _Notice(
                 icon: Icons.downloading_rounded,
                 message: 'Downloads start as soon as the app is back on screen.',
+                action: TextButton(
+                  onPressed: _cancelQueue,
+                  child: const Text('Cancel'),
+                ),
               ),
             ],
             if (_resolving) ...[
@@ -938,18 +982,26 @@ class _HomePageState extends State<HomePage> with WidgetsBindingObserver {
           ),
         ),
         const SizedBox(height: kSpace12),
-        SizedBox(
-          width: double.infinity,
-          child: OutlinedButton(
-            onPressed: _stopRequested
-                ? null
-                : () => setState(() => _stopRequested = true),
-            child: Text(
-              _stopRequested
-                  ? 'Finishing this track…'
-                  : 'Stop after this track',
+        Row(
+          children: [
+            Expanded(
+              child: OutlinedButton(
+                onPressed: _stopRequested
+                    ? null
+                    : () => setState(() => _stopRequested = true),
+                child: Text(
+                  _stopRequested
+                      ? 'Finishing this track…'
+                      : 'Stop after this track',
+                ),
+              ),
             ),
-          ),
+            const SizedBox(width: kSpace8),
+            TextButton(
+              onPressed: _cancelRequested ? null : _cancelQueue,
+              child: const Text('Cancel'),
+            ),
+          ],
         ),
       ],
     );
